@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Sozlamalar — Bir Qadam</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script defer src="{{ url_for('static', filename='theme.js') }}"></script>
+</head>
+<body class="dashboard-page">
+
+<aside class="sidebar">
+  <a class="brand" href="/dashboard"><span class="brand-mark">✦</span><span>BIR<span class="brand-light">QADAM</span></span></a>
+  <div class="side-label">SENING MAKONING</div>
+  <a class="side-item" href="/dashboard">▦ <span>Kundalik</span></a>
+  <a class="side-item" href="/dashboard#calendar">◷ <span>Progress kalendari</span></a>
+  <a class="side-item" href="/dashboard#reminders">🔔 <span>Eslatmalar</span></a>
+  <a class="side-item" href="/chat">💬 <span>Xabarlar</span></a>
+  <a class="side-item active" href="/settings">⚙ <span>Sozlamalar</span></a>
+  <div class="sidebar-bottom">
+    <div class="side-avatar">{{ user.name[:1]|upper }}</div>
+    <div class="side-user"><b>{{ user.name }}</b><small>@{{ user.username }}</small></div>
+    <a class="logout" href="{{ url_for('logout') }}" title="Chiqish">↗</a>
+  </div>
+</aside>
+
+<main class="app-main">
+  <header class="app-header">
+    <div>
+      <span class="eyebrow">HISOB</span>
+      <h1>Sozlamalar ⚙</h1>
+      <p>Profilingni va maxfiyligingni boshqar.</p>
+    </div>
+  </header>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for cat, msg in messages %}
+        <div class="flash-banner flash-{{ cat }}">{{ msg }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <div class="settings-grid">
+
+    <!-- Profile card -->
+    <section class="settings-card">
+      <div class="settings-card-head">
+        <div class="settings-icon">👤</div>
+        <div>
+          <h2>Profil ma'lumotlari</h2>
+          <p>Ism, foydalanuvchi nomi va maxfiylik.</p>
+        </div>
+      </div>
+      <form method="post" action="{{ url_for('settings') }}" class="settings-form">
+        <input type="hidden" name="action" value="profile">
+
+        <div class="field-group">
+          <label for="s-name">To'liq ism</label>
+          <input id="s-name" name="name" value="{{ user.name }}" required>
+        </div>
+
+        <div class="field-group">
+          <label for="s-username">Foydalanuvchi nomi</label>
+          <div class="input-prefix-wrap">
+            <span class="input-prefix">@</span>
+            <input id="s-username" name="username" value="{{ user.username }}"
+                   pattern="[a-zA-Z0-9_]{3,24}"
+                   title="3-24 belgi: harf, raqam yoki _" required>
+          </div>
+          <p class="field-hint">Boshqalar sizni shu nom bilan qidiradi.</p>
+        </div>
+
+        <div class="field-group">
+          <label for="s-email">Email</label>
+          <input id="s-email" value="{{ user.email }}" disabled>
+          <p class="field-hint">Email o'zgartirilmaydi.</p>
+        </div>
+
+        <div class="privacy-toggle">
+          <label class="toggle-label" for="s-private">
+            <div>
+              <b>Maxfiy profil</b>
+              <p>Yoqilsa, boshqalar sizning progressingizni ko'ra olmaydi. Lekin siz bilan chat qilishlari mumkin.</p>
+            </div>
+            <div class="toggle-wrap">
+              <input type="checkbox" id="s-private" name="is_private" class="toggle-input"
+                     {{ 'checked' if user.is_private else '' }}>
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </div>
+          </label>
+        </div>
+
+        <button class="btn primary" type="submit">Saqlash</button>
+      </form>
+    </section>
+
+    <!-- Password card -->
+    <section class="settings-card">
+      <div class="settings-card-head">
+        <div class="settings-icon">🔑</div>
+        <div>
+          <h2>Parolni o'zgartirish</h2>
+          <p>Kuchli parol — xavfsiz hisob.</p>
+        </div>
+      </div>
+      <form method="post" action="{{ url_for('settings') }}" class="settings-form">
+        <input type="hidden" name="action" value="password">
+
+        <div class="field-group">
+          <label for="s-oldpw">Eski parol</label>
+          <input type="password" id="s-oldpw" name="old_password"
+                 placeholder="Hozirgi parolingiz" required>
+        </div>
+        <div class="field-group">
+          <label for="s-newpw">Yangi parol</label>
+          <input type="password" id="s-newpw" name="new_password"
+                 placeholder="Kamida 8 belgi" minlength="8" required>
+        </div>
+
+        <button class="btn primary" type="submit">Parolni yangilash</button>
+      </form>
+    </section>
+
+  </div>
+</main>
+<button id="theme-toggle" title="Mavzuni o'zgartirish">🌙</button>
+</body>
+</html>

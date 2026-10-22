@@ -1,0 +1,76 @@
+<!doctype html><html lang="uz"><head> <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kundaligim — Bir qadam</title><link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"><script>window.INITIAL_ENTRIES={{ entries|tojson }};</script><script defer src="{{ url_for('static', filename='app.js') }}"></script><script defer src="{{ url_for('static', filename='reminders.js') }}"></script></head><body class="dashboard-page">
+
+<!-- ── Daily Quote Modal ────────────────────────────────────────────────── -->
+<div id="quote-modal" class="quote-modal" role="dialog" aria-modal="true" aria-label="Kunlik ilhom">
+  <div class="quote-modal-card">
+    <div class="qm-spark">✦</div>
+    <p class="qm-label">BUGUNGI ILHOM</p>
+    <blockquote id="qm-text" class="qm-text"></blockquote>
+    <p id="qm-author" class="qm-author"></p>
+    <button class="btn primary qm-close" id="qm-close" type="button">Boshlaylik! 🚀</button>
+  </div>
+</div>
+
+<aside class="sidebar"><a class="brand" href="/dashboard"><span class="brand-mark">✦</span><span>BIR<span class="brand-light">QADAM</span></span></a><div class="side-label">SENING MAKONING</div><a class="side-item active" href="#today">▦ <span>Kundalik</span></a><a class="side-item" href="#calendar">◷ <span>Progress kalendari</span></a><a class="side-item" href="#reminders">🔔 <span>Eslatmalar</span></a><a class="side-item" href="/chat">💬 <span>Xabarlar</span></a><a class="side-item" href="/settings">⚙ <span>Sozlamalar</span></a>{% if is_admin %}<a class="side-item" href="{{ url_for('admin') }}">⚙ <span>Admin panel</span></a>{% endif %}<div class="sidebar-bottom"><div class="side-avatar">{{ name[:1]|upper }}</div><div class="side-user"><b>{{ name }}</b>{% if is_superadmin %}<small style="color:var(--purple);font-weight:700">👑 Bosh Admin</small>{% else %}<small>30 kunlik sayohatchi</small>{% endif %}</div><a class="logout" href="{{ url_for('logout') }}" title="Chiqish">↗</a></div></aside>
+
+<main class="app-main"><header class="app-header"><div><span class="eyebrow">SENING SHAXSIY RIVOJLANISHING</span><h1>Salom, {{ name }} <span class="wave">✦</span></h1><p>Bugun o'zing uchun kichik bir qadam tashla.</p></div><div class="header-date" id="today-date"></div></header>
+
+<section class="progress-banner"><div class="progress-copy"><span class="banner-kicker">SENING SAYOHATING</span><h2>Har kuni ozgina bo'lsa ham <em>oldinga.</em></h2><p>O'zgarish katta qarorlardan emas, muntazam kichik qadamlardan boshlanadi.</p><div class="progress-track"><span id="main-progress"></span></div><div class="progress-meta"><span id="progress-count">0 / 30 kun yakunlandi</span><b id="progress-percent">0%</b></div></div><div class="progress-art"><div class="art-circle">✦</div><div class="art-number"><strong id="art-completed">00</strong><span>KUN<br>YAKUNLANDI</span></div><div class="art-sprout">✳</div></div></section>
+
+<div class="workspace" id="today"><section class="journal-panel">
+  <div class="panel-heading"><div><span class="eyebrow">BUGUNGI KUNDALIK</span><h2 id="day-title">1-kun: Men kimman?</h2></div><span class="day-pill" id="day-pill">KUN 01 / 30</span></div><div class="day-selector" id="day-selector"></div><div class="task-callout"><span class="task-symbol">✎</span><div><b id="task-heading">Bugungi vazifa</b><p id="task-text"></p></div></div><div class="entry-form"><div class="field-group"><label for="mood-select">Bugungi kayfiyatim</label><div class="mood-options" id="mood-options"><button type="button" data-mood="1" aria-label="Juda yomon">😢</button><button type="button" data-mood="2" aria-label="Yomon">😕</button><button type="button" data-mood="3" aria-label="O'rtacha">😐</button><button type="button" data-mood="4" aria-label="Yaxshi">🙂</button><button type="button" data-mood="5" aria-label="Ajoyib">😄</button></div></div><div id="dynamic-fields"></div><div class="field-group reflection-group"><label for="reflection">💭 O'ylab ko'r</label><p class="field-hint" id="reflection-prompt"></p><textarea id="reflection" rows="3" placeholder="Fikrlaringni shu yerga yoz..."></textarea></div><div class="field-group"><label>⭐ O'zimni baholayman</label><p class="field-hint">Bugungi kuningga necha yulduz berasan?</p><div class="rating-stars" id="rating-stars"><button type="button" data-rating="1">★</button><button type="button" data-rating="2">★</button><button type="button" data-rating="3">★</button><button type="button" data-rating="4">★</button><button type="button" data-rating="5">★</button></div></div><div class="field-group"><label for="proud">Bugun o'zimdan faxrlangan narsam</label><input id="proud" placeholder="Bugun men ..."></div><div class="form-footer"><span id="save-status">Javoblaring avtomatik saqlanmaydi — Saqlash tugmasini bos.</span><div class="footer-actions"><button class="btn secondary" id="save-btn" type="button">Saqlash</button><button class="btn primary" id="complete-btn" type="button">Kunni yakunlash <span>✓</span></button></div></div></div>
+</section>
+
+<aside class="right-rail"><section class="side-card quote-card"><div class="quote-mark">"</div><p id="daily-quote">Har kuni kichik qadam tashla — vaqt o'tib katta yo'l bosasan.</p><span>BUGUNGI ESLATMA</span></section><section class="side-card quick-card"><div class="side-card-head"><h3>Sayohat xaritasi</h3><span>✦</span></div><div class="mini-progress"><div class="mini-ring"><strong id="mini-percent">0%</strong></div><div><b id="mini-done">0 kun</b><small>muvaffaqiyatli yakunlandi</small></div></div><div class="mini-stats"><div><span>Qolgan kunlar</span><b id="remaining-days">30</b></div><div><span>O'rtacha baho</span><b id="average-rating">— / 5</b></div></div></section><section class="side-card tip-card"><img id="tip-day-image" class="tip-day-img" src="" alt="" loading="lazy"><span class="tip-icon">☀</span><b>Mukammallik shart emas.</b><p>Bir kunni o'tkazib yuborsang ham mayli. Istagan payting qaytib, davom etishing mumkin.</p></section></aside></div>
+
+<section class="calendar-panel" id="calendar"><div class="calendar-heading"><div><span class="eyebrow">IZCHILLIK — BU KUCH</span><h2>Progress kalendari</h2><p>Har bir belgi — o'zing uchun ajratgan vaqting.</p></div><div class="calendar-legend"><span><i class="legend-done"></i> Yakunlangan</span><span><i class="legend-today"></i> Tanlangan kun</span></div></div><div class="calendar-grid" id="calendar-grid"></div><div class="calendar-footer"><span><span class="legend-done inline-dot"></span> Rangli kunlar — kundalik yakunlangan</span><span id="calendar-summary">Hali birinchi kuningni boshlamading.</span></div></section>
+
+<section class="reminders-section" id="reminders">
+  <div class="reminders-heading">
+    <div>
+      <span class="eyebrow">ESLATMALAR TIZIMI</span>
+      <h2>Bildirishnomalar 🔔</h2>
+      <p>Kompyuteringiz vaqti bo'yicha aniq ishlovchi bildirishnomalar. Belgilangan daqiqada ovozli va vizual eslatma olasiz.</p>
+      <div class="reminder-live-clock">
+        <span class="clock-dot"></span> Kompyuter vaqti: <strong id="computer-clock-time">--:--:--</strong>
+      </div>
+    </div>
+    <div class="reminders-header-actions">
+      <button class="btn secondary" id="reminder-test-btn" type="button" title="Hozir sinov bildirishnomasini ko'rish">⚡ Sinov (Hozir)</button>
+      <button class="btn secondary" id="reminder-quick-10s-btn" type="button" title="10 soniyadan so'ng bildirishnoma kelishini sinab ko'rish">⏳ 10s tezkor test</button>
+      <button class="btn primary" id="reminder-notif-btn" type="button">🔔 <span>Bildirishnomaga ruxsat</span></button>
+    </div>
+  </div>
+
+  <div class="reminder-form-card">
+    <div class="reminder-form-row">
+      <div class="field-group" style="flex:1;min-width:200px">
+        <label for="reminder-msg">Eslatma matni</label>
+        <input type="text" id="reminder-msg" placeholder="Masalan: Kundalikni yozish vaqti bo'ldi!" maxlength="120">
+      </div>
+      <div class="field-group" style="flex:0 0 220px">
+        <label for="reminder-dt">Sana va kompyuter vaqti</label>
+        <input type="datetime-local" id="reminder-dt">
+      </div>
+      <div class="field-group" style="flex:0 0 auto;display:flex;align-items:flex-end">
+        <button class="btn primary" id="add-reminder-btn" type="button">+ Eslatma qo'shish</button>
+      </div>
+    </div>
+    <p id="reminder-form-status" style="font-size:12px;color:#9999ad;margin:8px 0 0;min-height:18px"></p>
+  </div>
+
+  <div class="reminders-tabs-bar">
+    <div class="reminder-tabs">
+      <button type="button" class="reminder-tab-btn active" data-filter="all">Barchasi (<span id="count-reminders-all">0</span>)</button>
+      <button type="button" class="reminder-tab-btn" data-filter="pending">⏳ Kutilmoqda (<span id="count-reminders-pending">0</span>)</button>
+      <button type="button" class="reminder-tab-btn" data-filter="fired">✓ Yetkazildi (<span id="count-reminders-fired">0</span>)</button>
+    </div>
+    <span class="reminders-sync-note">💻 Kompyuter soati bilan real vaqtda sinxron</span>
+  </div>
+
+  <div id="reminders-list" class="reminders-list">
+    <p class="reminders-empty" id="reminders-empty">Hozircha eslatmalar yo'q. Yuqoridagi formadan yangi bildirishnoma qo'shing!</p>
+  </div>
+</section>
+
+<footer class="app-footer"><span>✦ BIR QADAM</span><span>Bugungi sen — ertangi sening boshlanishi.</span></footer></main></body></html>
