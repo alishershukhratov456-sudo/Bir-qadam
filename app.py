@@ -9,7 +9,7 @@ import psycopg2.extras
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 
-# ── App setup ─────────────────────────────────────────────────────────────────
+# ── App setup ───────────────────────────────────────────────────────────[...]
 app = Flask(__name__)
 
 _secret = os.environ.get("SECRET_KEY", "")
@@ -36,7 +36,7 @@ USERNAME_RE = re.compile(r'^[a-zA-Z0-9_]{3,24}$')
 SUPERADMIN_USERNAMES = ["alishershukhratov456", "alishershukhratov67"]
 
 
-# ── Database helpers ──────────────────────────────────────────────────────────
+# ── Database helpers ────────────────────────────────────────────────────────��[...]
 @contextmanager
 def db():
     """Yields a psycopg2 connection that commits on exit and closes on error."""
@@ -192,7 +192,15 @@ def init_db():
             execute(conn, "UPDATE users SET is_admin=1 WHERE LOWER(email)=%s", (admin_email,))
 
 
-# ── Auth decorators ───────────────────────────────────────────────────────────
+def chat_template_vars(uid):
+    return {
+        "superadmin_usernames": SUPERADMIN_USERNAMES,
+        "superadmin_username": SUPERADMIN_USERNAMES[0] if SUPERADMIN_USERNAMES else None,
+        "is_superadmin": is_superadmin_user(uid),
+    }
+
+
+# ── Auth decorators ────────────────────────────────────────────────────────��[...]
 def login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
@@ -217,7 +225,7 @@ def admin_required(fn):
     return wrapper
 
 
-# ── Public pages ──────────────────────────────────────────────────────────────
+# ── Public pages ─────────────────────────────────────────────────────────��[...]
 @app.route("/")
 def index():
     if "user_id" in session:
@@ -283,7 +291,7 @@ def logout():
     return redirect(url_for("index"))
 
 
-# ── Dashboard ─────────────────────────────────────────────────────────────────
+# ── Dashboard ──────────────────────────────────────────────────────────��[...]
 @app.route("/dashboard")
 @login_required
 def dashboard():
@@ -305,7 +313,7 @@ def dashboard():
                            entries=entries, is_admin=is_admin, is_superadmin=is_super)
 
 
-# ── Account settings ──────────────────────────────────────────────────────────
+# ── Account settings ────────────────────────────────────────────────────────�[...]
 @app.route("/settings", methods=["GET", "POST"])
 @login_required
 def settings():
@@ -360,7 +368,7 @@ def settings():
     return render_template("account_settings.html", user=user)
 
 
-# ── Chat helpers ──────────────────────────────────────────────────────────────
+# ── Chat helpers ─────────────────────────────────────────────────────────��[...]
 def get_chat_sidebar_data(conn, uid):
     convos = fetchall(conn, """
         SELECT u.id, u.name, u.username, u.is_private,
@@ -394,7 +402,7 @@ def get_chat_sidebar_data(conn, uid):
     return convos, my_groups, all_users
 
 
-# ── Chat views ────────────────────────────────────────────────────────────────
+# ── Chat views ──────────────────────────────────────────────────────────�[...]
 @app.route("/chat")
 @login_required
 def chat():
@@ -402,8 +410,9 @@ def chat():
     with db() as conn:
         convos, my_groups, all_users = get_chat_sidebar_data(conn, uid)
     return render_template("chat.html", convos=convos, my_groups=my_groups,
-                           all_users=all_users, my_id=uid, mode=None,
-                           is_superadmin=is_superadmin_user(uid))
+                            all_users=all_users, my_id=uid, mode=None,
+                            is_superadmin=is_superadmin_user(uid),
+                            **chat_template_vars(uid))
 
 
 @app.route("/chat/<string:username>")
@@ -430,9 +439,10 @@ def chat_with(username):
         """, (uid, partner["id"], partner["id"], uid))
         convos, my_groups, all_users = get_chat_sidebar_data(conn, uid)
     return render_template("chat.html", convos=convos, my_groups=my_groups,
-                           all_users=all_users, partner=partner,
-                           msgs=msgs, my_id=uid, mode="dm",
-                           is_superadmin=is_superadmin_user(uid))
+                            all_users=all_users, partner=partner,
+                            msgs=msgs, my_id=uid, mode="dm",
+                            is_superadmin=is_superadmin_user(uid),
+                            **chat_template_vars(uid))
 
 
 @app.route("/chat/group/<int:group_id>")
@@ -468,13 +478,14 @@ def chat_group(group_id):
         """, (group_id,))
         convos, my_groups, all_users = get_chat_sidebar_data(conn, uid)
     return render_template("chat.html", convos=convos, my_groups=my_groups,
-                           all_users=all_users, active_group=group,
-                           group_members=group_members, my_role=my_membership["role"],
-                           msgs=msgs, my_id=uid, mode="group",
-                           is_superadmin=is_superadmin_user(uid))
+                            all_users=all_users, active_group=group,
+                            group_members=group_members, my_role=my_membership["role"],
+                            msgs=msgs, my_id=uid, mode="group",
+                            is_superadmin=is_superadmin_user(uid),
+                            **chat_template_vars(uid))
 
 
-# ── Search & user APIs ────────────────────────────────────────────────────────
+# ── Search & user APIs ───────────────────────────────────────────────────────��[...]
 @app.route("/api/search")
 @login_required
 def search_users():
@@ -522,7 +533,7 @@ def get_all_users():
     } for r in rows])
 
 
-# ── Direct chat API ───────────────────────────────────────────────────────────
+# ── Direct chat API ────────────────────────────────────────────────────────��[...]
 @app.route("/api/chat/<int:partner_id>", methods=["POST"])
 @login_required
 def send_message(partner_id):
@@ -563,7 +574,7 @@ def poll_messages(partner_id):
                      "body": m["body"], "sent_at": str(m["sent_at"])} for m in msgs])
 
 
-# ── Groups API ────────────────────────────────────────────────────────────────
+# ── Groups API ──────────────────────────────────────────────────────────�[...]
 @app.route("/api/groups", methods=["GET", "POST"])
 @login_required
 def api_groups():
@@ -769,7 +780,7 @@ def delete_group(group_id):
     return jsonify(ok=True)
 
 
-# ── Entry API ─────────────────────────────────────────────────────────────────
+# ── Entry API ──────────────────────────────────────────────────────────��[...]
 @app.route("/api/entry/<int:day>", methods=["POST"])
 @login_required
 def save_entry(day):
@@ -814,7 +825,7 @@ def get_entries():
     return jsonify({str(r["day"]): dict(r) for r in rows})
 
 
-# ── Reminders ─────────────────────────────────────────────────────────────────
+# ── Reminders ──────────────────────────────────────────────────────────��[...]
 @app.route("/api/reminders", methods=["GET"])
 @login_required
 def get_reminders():
@@ -857,7 +868,7 @@ def fire_reminder(rid):
     return jsonify(ok=True)
 
 
-# ── Admin ─────────────────────────────────────────────────────────────────────
+# ── Admin ────────────────────────────────────────────────────────────[...]
 @app.route("/admin")
 @admin_required
 def admin():
@@ -878,11 +889,11 @@ def admin():
         total_entries   = fetchone(conn, "SELECT COUNT(*) AS c FROM entries")["c"]
         total_reminders = fetchone(conn, "SELECT COUNT(*) AS c FROM reminders WHERE fired=0")["c"]
     return render_template("admin.html", users=users,
-                           total_users=stats["total_users"],
-                           total_admins=stats["total_admins"],
-                           total_entries=total_entries,
-                           total_reminders=total_reminders,
-                           is_superadmin=is_superadmin_user(uid))
+                            total_users=stats["total_users"],
+                            total_admins=stats["total_admins"],
+                            total_entries=total_entries,
+                            total_reminders=total_reminders,
+                            is_superadmin=is_superadmin_user(uid))
 
 
 @app.route("/api/admin/users/<int:target_id>/role", methods=["POST"])
