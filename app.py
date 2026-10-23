@@ -1,5 +1,4 @@
 import os, json, re, secrets
-import os, json, re, secrets
 from datetime import date
 from functools import wraps
 from contextlib import contextmanager
@@ -9,7 +8,7 @@ import psycopg2.extras
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 
-# ── App setup ───────────────────────────────────────────────────────────[...]
+# ── App setup ────────────────────────────────────────────────────────────
 app = Flask(__name__)
 
 _secret = os.environ.get("SECRET_KEY", "")
@@ -36,7 +35,7 @@ USERNAME_RE = re.compile(r'^[a-zA-Z0-9_]{3,24}$')
 SUPERADMIN_USERNAMES = ["alishershukhratov456", "alishershukhratov67"]
 
 
-# ── Database helpers ────────────────────────────────────────────────────────��[...]
+# ── Database helpers ────────────────────────────────────────────────────────
 @contextmanager
 def db():
     """Yields a psycopg2 connection that commits on exit and closes on error."""
@@ -109,55 +108,7 @@ def init_db():
             fired INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )""")
-        execute(conn, """CREATE TABLE IF NOT EXISTS messages (
-            id SERIAL PRIMARY KEY,
-            sender_id INTEGER NOT NULL,
-            receiver_id INTEGER NOT NULL,
-            body TEXT NOT NULL,
-            sent_at TIMESTAMP NOT NULL DEFAULT NOW(),
-            is_read INTEGER NOT NULL DEFAULT 0,
-            FOREIGN KEY(sender_id) REFERENCES users(id),
-            FOREIGN KEY(receiver_id) REFERENCES users(id)
-        )""")
-        execute(conn, """CREATE TABLE IF NOT EXISTS chat_groups (
-            id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            creator_id INTEGER NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-            FOREIGN KEY(creator_id) REFERENCES users(id)
-        )""")
-        execute(conn, """CREATE TABLE IF NOT EXISTS group_members (
-            id SERIAL PRIMARY KEY,
-            group_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            role TEXT NOT NULL DEFAULT 'member',
-            joined_at TIMESTAMP NOT NULL DEFAULT NOW(),
-            UNIQUE(group_id, user_id),
-            FOREIGN KEY(group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )""")
-        execute(conn, """CREATE TABLE IF NOT EXISTS group_messages (
-            id SERIAL PRIMARY KEY,
-            group_id INTEGER NOT NULL,
-            sender_id INTEGER NOT NULL,
-            body TEXT NOT NULL,
-            sent_at TIMESTAMP NOT NULL DEFAULT NOW(),
-            FOREIGN KEY(group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,
-            FOREIGN KEY(sender_id) REFERENCES users(id)
-        )""")
 
-        # Rename old 'groups' table to 'chat_groups' if it exists
-        execute(conn, """
-            DO $$
-            BEGIN
-                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='groups')
-                   AND NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='chat_groups')
-                THEN
-                    ALTER TABLE groups RENAME TO chat_groups;
-                END IF;
-            END $$;
-        """)
         existing_cols = {
             r["column_name"]
             for r in fetchall(conn,
@@ -192,15 +143,7 @@ def init_db():
             execute(conn, "UPDATE users SET is_admin=1 WHERE LOWER(email)=%s", (admin_email,))
 
 
-def chat_template_vars(uid):
-    return {
-        "superadmin_usernames": SUPERADMIN_USERNAMES,
-        "superadmin_username": SUPERADMIN_USERNAMES[0] if SUPERADMIN_USERNAMES else None,
-        "is_superadmin": is_superadmin_user(uid),
-    }
-
-
-# ── Auth decorators ────────────────────────────────────────────────────────��[...]
+# ── Auth decorators ────────────────────────────────────────────────────────
 def login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
@@ -225,7 +168,7 @@ def admin_required(fn):
     return wrapper
 
 
-# ── Public pages ─────────────────────────────────────────────────────────��[...]
+# ── Public pages ───────────────────────────────────────────────────────────
 @app.route("/")
 def index():
     if "user_id" in session:
@@ -291,7 +234,7 @@ def logout():
     return redirect(url_for("index"))
 
 
-# ── Dashboard ──────────────────────────────────────────────────────────��[...]
+# ── Dashboard ────────────────────────────────────────────────────────────
 @app.route("/dashboard")
 @login_required
 def dashboard():
@@ -313,7 +256,7 @@ def dashboard():
                            entries=entries, is_admin=is_admin, is_superadmin=is_super)
 
 
-# ── Account settings ────────────────────────────────────────────────────────�[...]
+# ── Account settings ────────────────────────────────────────────────────────
 @app.route("/settings", methods=["GET", "POST"])
 @login_required
 def settings():
@@ -368,419 +311,7 @@ def settings():
     return render_template("account_settings.html", user=user)
 
 
-# ── Chat helpers ─────────────────────────────────────────────────────────��[...]
-def get_chat_sidebar_data(conn, uid):
-    convos = fetchall(conn, """
-        SELECT u.id, u.name, u.username, u.is_private,
-               MAX(m.sent_at) AS last_at,
-               SUM(CASE WHEN m.receiver_id=%s AND m.is_read=0 THEN 1 ELSE 0 END) AS unread
-        FROM messages m
-        JOIN users u ON u.id = CASE WHEN m.sender_id=%s THEN m.receiver_id ELSE m.sender_id END
-        WHERE m.sender_id=%s OR m.receiver_id=%s
-        GROUP BY u.id, u.name, u.username, u.is_private
-        ORDER BY last_at DESC
-    """, (uid, uid, uid, uid))
-
-    my_groups = fetchall(conn, """
-        SELECT g.id, g.name, g.description, g.creator_id, g.created_at,
-               gm.role AS my_role,
-               (SELECT COUNT(*) FROM group_members WHERE group_id=g.id) AS member_count,
-               (SELECT MAX(gm2.sent_at) FROM group_messages gm2 WHERE gm2.group_id=g.id) AS last_at
-        FROM chat_groups g
-        JOIN group_members gm ON gm.group_id=g.id AND gm.user_id=%s
-        ORDER BY COALESCE(last_at, g.created_at) DESC
-    """, (uid,))
-
-    all_users = fetchall(conn, """
-        SELECT u.id, u.name, u.username, u.is_private, u.is_admin,
-               (SELECT COUNT(*) FROM entries e WHERE e.user_id=u.id AND e.completed=1) AS completed_count
-        FROM users u
-        WHERE u.id != %s
-        ORDER BY u.name ASC
-    """, (uid,))
-
-    return convos, my_groups, all_users
-
-
-# ── Chat views ──────────────────────────────────────────────────────────�[...]
-@app.route("/chat")
-@login_required
-def chat():
-    uid = session["user_id"]
-    with db() as conn:
-        convos, my_groups, all_users = get_chat_sidebar_data(conn, uid)
-    return render_template("chat.html", convos=convos, my_groups=my_groups,
-                            all_users=all_users, my_id=uid, mode=None,
-                            is_superadmin=is_superadmin_user(uid),
-                            **chat_template_vars(uid))
-
-
-@app.route("/chat/<string:username>")
-@login_required
-def chat_with(username):
-    uid = session["user_id"]
-    with db() as conn:
-        partner = fetchone(conn,
-            "SELECT id,name,username,is_private,is_admin FROM users WHERE username=%s", (username,))
-        if not partner or partner["id"] == uid:
-            flash("Foydalanuvchi topilmadi.", "error")
-            return redirect(url_for("chat"))
-        execute(conn,
-            "UPDATE messages SET is_read=1 WHERE sender_id=%s AND receiver_id=%s",
-            (partner["id"], uid))
-        msgs = fetchall(conn, """
-            SELECT m.id, m.sender_id, m.body, m.sent_at, m.is_read,
-                   u.name AS sender_name
-            FROM messages m
-            JOIN users u ON u.id = m.sender_id
-            WHERE (m.sender_id=%s AND m.receiver_id=%s)
-               OR (m.sender_id=%s AND m.receiver_id=%s)
-            ORDER BY m.sent_at ASC
-        """, (uid, partner["id"], partner["id"], uid))
-        convos, my_groups, all_users = get_chat_sidebar_data(conn, uid)
-    return render_template("chat.html", convos=convos, my_groups=my_groups,
-                            all_users=all_users, partner=partner,
-                            msgs=msgs, my_id=uid, mode="dm",
-                            is_superadmin=is_superadmin_user(uid),
-                            **chat_template_vars(uid))
-
-
-@app.route("/chat/group/<int:group_id>")
-@login_required
-def chat_group(group_id):
-    uid = session["user_id"]
-    with db() as conn:
-        my_membership = fetchone(conn,
-            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
-        if not my_membership:
-            flash("Siz bu guruh a'zosi emassiz.", "error")
-            return redirect(url_for("chat"))
-        group = fetchone(conn,
-            "SELECT id, name, description, creator_id, created_at FROM chat_groups WHERE id=%s", (group_id,))
-        if not group:
-            flash("Guruh topilmadi.", "error")
-            return redirect(url_for("chat"))
-        group_members = fetchall(conn, """
-            SELECT u.id, u.name, u.username, u.is_admin AS site_admin, gm.role, gm.joined_at
-            FROM group_members gm
-            JOIN users u ON u.id = gm.user_id
-            WHERE gm.group_id = %s
-            ORDER BY CASE gm.role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END, u.name ASC
-        """, (group_id,))
-        msgs = fetchall(conn, """
-            SELECT gm.id, gm.sender_id, u.name AS sender_name, u.username AS sender_username,
-                   gmem.role AS sender_role, gm.body, gm.sent_at
-            FROM group_messages gm
-            JOIN users u ON u.id = gm.sender_id
-            LEFT JOIN group_members gmem ON gmem.group_id = gm.group_id AND gmem.user_id = gm.sender_id
-            WHERE gm.group_id = %s
-            ORDER BY gm.sent_at ASC
-        """, (group_id,))
-        convos, my_groups, all_users = get_chat_sidebar_data(conn, uid)
-    return render_template("chat.html", convos=convos, my_groups=my_groups,
-                            all_users=all_users, active_group=group,
-                            group_members=group_members, my_role=my_membership["role"],
-                            msgs=msgs, my_id=uid, mode="group",
-                            is_superadmin=is_superadmin_user(uid),
-                            **chat_template_vars(uid))
-
-
-# ── Search & user APIs ───────────────────────────────────────────────────────��[...]
-@app.route("/api/search")
-@login_required
-def search_users():
-    q = request.args.get("q", "").strip()
-    if len(q) < 2:
-        return jsonify([])
-    uid = session["user_id"]
-    with db() as conn:
-        rows = fetchall(conn, """
-            SELECT id, name, username, is_private,
-                   (SELECT COUNT(*) FROM entries e WHERE e.user_id=users.id AND e.completed=1) AS completed_count
-            FROM users
-            WHERE (username ILIKE %s OR name ILIKE %s) AND id != %s
-            ORDER BY username
-            LIMIT 20
-        """, (f"%{q}%", f"%{q}%", uid))
-    return jsonify([{
-        "id":         r["id"],
-        "name":       r["name"],
-        "username":   r["username"],
-        "is_private": bool(r["is_private"]),
-        "completed":  r["completed_count"] if not r["is_private"] else None
-    } for r in rows])
-
-
-@app.route("/api/all-users")
-@login_required
-def get_all_users():
-    uid = session["user_id"]
-    with db() as conn:
-        rows = fetchall(conn, """
-            SELECT u.id, u.name, u.username, u.is_private, u.is_admin,
-                   (SELECT COUNT(*) FROM entries e WHERE e.user_id=u.id AND e.completed=1) AS completed_count
-            FROM users u
-            WHERE u.id != %s
-            ORDER BY u.name ASC
-        """, (uid,))
-    return jsonify([{
-        "id":         r["id"],
-        "name":       r["name"],
-        "username":   r["username"],
-        "is_private": bool(r["is_private"]),
-        "is_admin":   bool(r["is_admin"]),
-        "completed":  r["completed_count"] if not r["is_private"] else None
-    } for r in rows])
-
-
-# ── Direct chat API ────────────────────────────────────────────────────────��[...]
-@app.route("/api/chat/<int:partner_id>", methods=["POST"])
-@login_required
-def send_message(partner_id):
-    uid  = session["user_id"]
-    body = (request.get_json(silent=True) or {}).get("body", "").strip()
-    if not body or len(body) > 2000:
-        return jsonify(ok=False, error="Xabar bo'sh yoki juda uzun."), 400
-    with db() as conn:
-        partner = fetchone(conn, "SELECT id FROM users WHERE id=%s", (partner_id,))
-        if not partner:
-            return jsonify(ok=False, error="Foydalanuvchi topilmadi."), 404
-        cur = execute(conn,
-            "INSERT INTO messages(sender_id,receiver_id,body) VALUES(%s,%s,%s) RETURNING id,sent_at",
-            (uid, partner_id, body))
-        row = cur.fetchone()
-    return jsonify(ok=True, id=row["id"],
-                   sent_at=str(row["sent_at"]), body=body)
-
-
-@app.route("/api/chat/<int:partner_id>/poll")
-@login_required
-def poll_messages(partner_id):
-    uid   = session["user_id"]
-    after = request.args.get("after", "1970-01-01 00:00:00")
-    with db() as conn:
-        msgs = fetchall(conn, """
-            SELECT m.id, m.sender_id, m.body, m.sent_at
-            FROM messages m
-            WHERE ((m.sender_id=%s AND m.receiver_id=%s)
-                OR (m.sender_id=%s AND m.receiver_id=%s))
-              AND m.sent_at > %s
-            ORDER BY m.sent_at ASC
-        """, (uid, partner_id, partner_id, uid, after))
-        execute(conn,
-            "UPDATE messages SET is_read=1 WHERE sender_id=%s AND receiver_id=%s",
-            (partner_id, uid))
-    return jsonify([{"id": m["id"], "sender_id": m["sender_id"],
-                     "body": m["body"], "sent_at": str(m["sent_at"])} for m in msgs])
-
-
-# ── Groups API ──────────────────────────────────────────────────────────�[...]
-@app.route("/api/groups", methods=["GET", "POST"])
-@login_required
-def api_groups():
-    uid = session["user_id"]
-    if request.method == "POST":
-        data        = request.get_json(silent=True) or {}
-        name        = (data.get("name") or "").strip()
-        description = (data.get("description") or "").strip()
-        member_ids  = data.get("member_ids") or []
-        if not name or len(name) > 80:
-            return jsonify(ok=False, error="Guruh nomi 1 dan 80 belgigacha bo'lishi kerak."), 400
-        with db() as conn:
-            cur = execute(conn,
-                "INSERT INTO chat_groups(name, description, creator_id) VALUES(%s,%s,%s) RETURNING id",
-                (name, description, uid))
-            gid = cur.fetchone()["id"]
-            execute(conn,
-                "INSERT INTO group_members(group_id, user_id, role) VALUES(%s,%s,'owner')",
-                (gid, uid))
-            for mid in member_ids:
-                try:
-                    mid = int(mid)
-                    if mid != uid:
-                        execute(conn,
-                            "INSERT INTO group_members(group_id, user_id, role) "
-                            "VALUES(%s,%s,'member') ON CONFLICT DO NOTHING",
-                            (gid, mid))
-                except (ValueError, TypeError):
-                    pass
-        return jsonify(ok=True, group_id=gid)
-
-    with db() as conn:
-        groups = fetchall(conn, """
-            SELECT g.id, g.name, g.description, g.creator_id, g.created_at,
-                   gm.role AS my_role,
-                   (SELECT COUNT(*) FROM group_members WHERE group_id=g.id) AS member_count
-            FROM chat_groups g
-            JOIN group_members gm ON gm.group_id=g.id AND gm.user_id=%s
-            ORDER BY g.id DESC
-        """, (uid,))
-    return jsonify([dict(g) for g in groups])
-
-
-@app.route("/api/group/<int:group_id>/send", methods=["POST"])
-@login_required
-def send_group_message(group_id):
-    uid  = session["user_id"]
-    body = (request.get_json(silent=True) or {}).get("body", "").strip()
-    if not body or len(body) > 2000:
-        return jsonify(ok=False, error="Xabar bo'sh yoki juda uzun."), 400
-    with db() as conn:
-        member = fetchone(conn,
-            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
-        if not member:
-            return jsonify(ok=False, error="Siz bu guruh a'zosi emassiz."), 403
-        cur = execute(conn,
-            "INSERT INTO group_messages(group_id, sender_id, body) VALUES(%s,%s,%s) RETURNING id,sent_at",
-            (group_id, uid, body))
-        row = cur.fetchone()
-        sender = fetchone(conn, "SELECT name, username FROM users WHERE id=%s", (uid,))
-    return jsonify(ok=True, id=row["id"], sent_at=str(row["sent_at"]), body=body,
-                   sender_id=uid, sender_name=sender["name"], sender_role=member["role"])
-
-
-@app.route("/api/group/<int:group_id>/poll")
-@login_required
-def poll_group_messages(group_id):
-    uid   = session["user_id"]
-    after = request.args.get("after", "1970-01-01 00:00:00")
-    with db() as conn:
-        member = fetchone(conn,
-            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
-        if not member:
-            return jsonify([]), 403
-        msgs = fetchall(conn, """
-            SELECT gm.id, gm.sender_id, gm.body, gm.sent_at,
-                   u.name AS sender_name, u.username AS sender_username,
-                   gmem.role AS sender_role
-            FROM group_messages gm
-            JOIN users u ON u.id = gm.sender_id
-            LEFT JOIN group_members gmem ON gmem.group_id = gm.group_id AND gmem.user_id = gm.sender_id
-            WHERE gm.group_id = %s AND gm.sent_at > %s
-            ORDER BY gm.sent_at ASC
-        """, (group_id, after))
-    return jsonify([{**dict(m), "sent_at": str(m["sent_at"])} for m in msgs])
-
-
-@app.route("/api/group/<int:group_id>/details")
-@login_required
-def group_details(group_id):
-    uid = session["user_id"]
-    with db() as conn:
-        my_membership = fetchone(conn,
-            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
-        if not my_membership:
-            return jsonify(ok=False, error="Siz bu guruh a'zosi emassiz."), 403
-        group = fetchone(conn,
-            "SELECT id, name, description, creator_id, created_at FROM chat_groups WHERE id=%s", (group_id,))
-        members = fetchall(conn, """
-            SELECT u.id, u.name, u.username, gm.role, gm.joined_at
-            FROM group_members gm
-            JOIN users u ON u.id = gm.user_id
-            WHERE gm.group_id = %s
-            ORDER BY CASE gm.role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END, u.name ASC
-        """, (group_id,))
-    return jsonify(ok=True, group=dict(group), my_role=my_membership["role"],
-                   members=[dict(m) for m in members])
-
-
-@app.route("/api/group/<int:group_id>/members", methods=["POST"])
-@login_required
-def add_group_member(group_id):
-    uid        = session["user_id"]
-    data       = request.get_json(silent=True) or {}
-    target_uid = data.get("user_id")
-    if not target_uid:
-        return jsonify(ok=False, error="Foydalanuvchi ko'rsatilmadi."), 400
-    with db() as conn:
-        my_membership = fetchone(conn,
-            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
-        if not my_membership or my_membership["role"] not in ("owner", "admin"):
-            return jsonify(ok=False, error="Faqat guruh egasi yoki admin a'zo qo'sha oladi."), 403
-        if not fetchone(conn, "SELECT id FROM users WHERE id=%s", (target_uid,)):
-            return jsonify(ok=False, error="Foydalanuvchi topilmadi."), 404
-        try:
-            execute(conn,
-                "INSERT INTO group_members(group_id, user_id, role) VALUES(%s,%s,'member')",
-                (group_id, target_uid))
-        except psycopg2.errors.UniqueViolation:
-            return jsonify(ok=False, error="Bu foydalanuvchi allaqachon guruhda."), 400
-    return jsonify(ok=True)
-
-
-@app.route("/api/group/<int:group_id>/members/<int:target_id>/role", methods=["POST"])
-@login_required
-def update_group_member_role(group_id, target_id):
-    uid      = session["user_id"]
-    data     = request.get_json(silent=True) or {}
-    new_role = (data.get("role") or "").strip().lower()
-    if new_role not in ("admin", "member"):
-        return jsonify(ok=False, error="Noto'g'ri rol tanlandi."), 400
-    with db() as conn:
-        my_membership = fetchone(conn,
-            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
-        is_super = is_superadmin_user(uid)
-        if not is_super and (not my_membership or my_membership["role"] != "owner"):
-            return jsonify(ok=False, error="Faqat guruh egasi admin tayinlashi mumkin."), 403
-        target = fetchone(conn,
-            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, target_id))
-        if not target:
-            return jsonify(ok=False, error="Guruh a'zosi topilmadi."), 404
-        if target["role"] == "owner":
-            return jsonify(ok=False, error="Guruh egasining rolini o'zgartirib bo'lmaydi."), 400
-        execute(conn,
-            "UPDATE group_members SET role=%s WHERE group_id=%s AND user_id=%s",
-            (new_role, group_id, target_id))
-    return jsonify(ok=True)
-
-
-@app.route("/api/group/<int:group_id>/members/<int:target_id>", methods=["DELETE"])
-@login_required
-def remove_group_member(group_id, target_id):
-    uid = session["user_id"]
-    with db() as conn:
-        my_membership = fetchone(conn,
-            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
-        if not my_membership:
-            return jsonify(ok=False, error="Ruxsat yo'q."), 403
-        target = fetchone(conn,
-            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, target_id))
-        if not target:
-            return jsonify(ok=False, error="A'zo topilmadi."), 404
-        if target_id == uid:
-            if target["role"] == "owner":
-                return jsonify(ok=False, error="Guruh egasi guruhni tark eta olmaydi."), 400
-            execute(conn, "DELETE FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
-            return jsonify(ok=True, left=True)
-        if my_membership["role"] == "owner":
-            execute(conn, "DELETE FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, target_id))
-            return jsonify(ok=True)
-        elif my_membership["role"] == "admin":
-            if target["role"] in ("owner", "admin"):
-                return jsonify(ok=False, error="Admin boshqa adminni yoki egasini chiqara olmaydi."), 403
-            execute(conn, "DELETE FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, target_id))
-            return jsonify(ok=True)
-        return jsonify(ok=False, error="A'zolarni chiqarish huquqiga ega emassiz."), 403
-
-
-@app.route("/api/group/<int:group_id>", methods=["DELETE"])
-@login_required
-def delete_group(group_id):
-    uid = session["user_id"]
-    with db() as conn:
-        my_membership = fetchone(conn,
-            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
-        user_row = fetchone(conn, "SELECT is_admin FROM users WHERE id=%s", (uid,))
-        is_site_admin = bool(user_row and user_row["is_admin"])
-        if not is_site_admin and (not my_membership or my_membership["role"] != "owner"):
-            return jsonify(ok=False, error="Faqat guruh egasi guruhni o'chira oladi."), 403
-        execute(conn, "DELETE FROM group_messages WHERE group_id=%s", (group_id,))
-        execute(conn, "DELETE FROM group_members WHERE group_id=%s", (group_id,))
-        execute(conn, "DELETE FROM chat_groups WHERE id=%s", (group_id,))
-    return jsonify(ok=True)
-
-
-# ── Entry API ──────────────────────────────────────────────────────────��[...]
+# ── Entry API ─────────────────────────────────────────────────────────────
 @app.route("/api/entry/<int:day>", methods=["POST"])
 @login_required
 def save_entry(day):
@@ -825,7 +356,7 @@ def get_entries():
     return jsonify({str(r["day"]): dict(r) for r in rows})
 
 
-# ── Reminders ──────────────────────────────────────────────────────────��[...]
+# ── Reminders ─────────────────────────────────────────────────────────────
 @app.route("/api/reminders", methods=["GET"])
 @login_required
 def get_reminders():
@@ -868,7 +399,7 @@ def fire_reminder(rid):
     return jsonify(ok=True)
 
 
-# ── Admin ────────────────────────────────────────────────────────────[...]
+# ── Admin ────────────────────────────────────────────────────────────────
 @app.route("/admin")
 @admin_required
 def admin():
