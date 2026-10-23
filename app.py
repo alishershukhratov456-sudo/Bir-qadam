@@ -119,7 +119,7 @@ def init_db():
             FOREIGN KEY(sender_id) REFERENCES users(id),
             FOREIGN KEY(receiver_id) REFERENCES users(id)
         )""")
-        execute(conn, """CREATE TABLE IF NOT EXISTS groups (
+        execute(conn, """CREATE TABLE IF NOT EXISTS chat_groups (
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
@@ -134,7 +134,7 @@ def init_db():
             role TEXT NOT NULL DEFAULT 'member',
             joined_at TIMESTAMP NOT NULL DEFAULT NOW(),
             UNIQUE(group_id, user_id),
-            FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE,
+            FOREIGN KEY(group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )""")
         execute(conn, """CREATE TABLE IF NOT EXISTS group_messages (
@@ -143,11 +143,21 @@ def init_db():
             sender_id INTEGER NOT NULL,
             body TEXT NOT NULL,
             sent_at TIMESTAMP NOT NULL DEFAULT NOW(),
-            FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE,
+            FOREIGN KEY(group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,
             FOREIGN KEY(sender_id) REFERENCES users(id)
         )""")
 
-        # Live migrations — add columns that may not exist in older schemas
+        # Rename old 'groups' table to 'chat_groups' if it exists
+        execute(conn, """
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='groups')
+                   AND NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='chat_groups')
+                THEN
+                    ALTER TABLE groups RENAME TO chat_groups;
+                END IF;
+            END $$;
+        """)
         existing_cols = {
             r["column_name"]
             for r in fetchall(conn,
@@ -368,7 +378,7 @@ def get_chat_sidebar_data(conn, uid):
                gm.role AS my_role,
                (SELECT COUNT(*) FROM group_members WHERE group_id=g.id) AS member_count,
                (SELECT MAX(gm2.sent_at) FROM group_messages gm2 WHERE gm2.group_id=g.id) AS last_at
-        FROM groups g
+        FROM chat_groups g
         JOIN group_members gm ON gm.group_id=g.id AND gm.user_id=%s
         ORDER BY COALESCE(last_at, g.created_at) DESC
     """, (uid,))
@@ -436,7 +446,7 @@ def chat_group(group_id):
             flash("Siz bu guruh a'zosi emassiz.", "error")
             return redirect(url_for("chat"))
         group = fetchone(conn,
-            "SELECT id, name, description, creator_id, created_at FROM groups WHERE id=%s", (group_id,))
+            "SELECT id, name, description, creator_id, created_at FROM chat_groups WHERE id=%s", (group_id,))
         if not group:
             flash("Guruh topilmadi.", "error")
             return redirect(url_for("chat"))
@@ -567,7 +577,7 @@ def api_groups():
             return jsonify(ok=False, error="Guruh nomi 1 dan 80 belgigacha bo'lishi kerak."), 400
         with db() as conn:
             cur = execute(conn,
-                "INSERT INTO groups(name, description, creator_id) VALUES(%s,%s,%s) RETURNING id",
+                "INSERT INTO chat_groups(name, description, creator_id) VALUES(%s,%s,%s) RETURNING id",
                 (name, description, uid))
             gid = cur.fetchone()["id"]
             execute(conn,
@@ -590,7 +600,7 @@ def api_groups():
             SELECT g.id, g.name, g.description, g.creator_id, g.created_at,
                    gm.role AS my_role,
                    (SELECT COUNT(*) FROM group_members WHERE group_id=g.id) AS member_count
-            FROM groups g
+            FROM chat_groups g
             JOIN group_members gm ON gm.group_id=g.id AND gm.user_id=%s
             ORDER BY g.id DESC
         """, (uid,))
@@ -651,7 +661,7 @@ def group_details(group_id):
         if not my_membership:
             return jsonify(ok=False, error="Siz bu guruh a'zosi emassiz."), 403
         group = fetchone(conn,
-            "SELECT id, name, description, creator_id, created_at FROM groups WHERE id=%s", (group_id,))
+            "SELECT id, name, description, creator_id, created_at FROM chat_groups WHERE id=%s", (group_id,))
         members = fetchall(conn, """
             SELECT u.id, u.name, u.username, gm.role, gm.joined_at
             FROM group_members gm
@@ -755,7 +765,7 @@ def delete_group(group_id):
             return jsonify(ok=False, error="Faqat guruh egasi guruhni o'chira oladi."), 403
         execute(conn, "DELETE FROM group_messages WHERE group_id=%s", (group_id,))
         execute(conn, "DELETE FROM group_members WHERE group_id=%s", (group_id,))
-        execute(conn, "DELETE FROM groups WHERE id=%s", (group_id,))
+        execute(conn, "DELETE FROM chat_groups WHERE id=%s", (group_id,))
     return jsonify(ok=True)
 
 
