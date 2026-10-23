@@ -1,7 +1,8 @@
-import os, json, re, secrets
-from datetime import date
+import os, json, re, secrets, random, smtplib
+from datetime import date, datetime, timedelta
 from functools import wraps
 from contextlib import contextmanager
+from email.message import EmailMessage
 
 import psycopg2
 import psycopg2.extras
@@ -33,6 +34,7 @@ if DATABASE_URL.startswith("postgres://"):
 
 USERNAME_RE = re.compile(r'^[a-zA-Z0-9_]{3,24}$')
 SUPERADMIN_USERNAMES = ["alishershukhratov456", "alishershukhratov67"]
+TWOFA_CODE_TTL_MINUTES = 10
 
 
 # ── Database helpers ────────────────────────────────────────────────────────
@@ -76,6 +78,56 @@ def is_superadmin_user(uid):
         return bool(u and u["username"].lower() in [s.lower() for s in SUPERADMIN_USERNAMES])
 
 
+def generate_code():
+    return f"{random.randint(100000, 999999):06d}"
+
+
+def send_verification_email(email, code):
+    smtp_host = os.environ.get("SMTP_HOST", "").strip()
+    if not smtp_host:
+        raise RuntimeError("SMTP_HOST is not configured")
+
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USERNAME", "").strip()
+    smtp_password = os.environ.get("SMTP_PASSWORD", "").strip()
+    smtp_from = os.environ.get("SMTP_FROM", smtp_user or "noreply@localhost").strip()
+
+    msg = EmailMessage()
+    msg["Subject"] = "Bir Qadam — email verification code"
+    msg["From"] = smtp_from
+    msg["To"] = email
+    msg.set_content(
+        "Your 6-digit verification code is: " + code + "\n\n"
+        "This code expires in 10 minutes."
+    )
+
+    with smtplib.SMTP(smtp_host, smtp_port) as server:
+        server.ehlo()
+        if smtp_user and smtp_password:
+            try:
+                server.starttls()
+            except smtplib.SMTPNotSupportedError:
+                pass
+            server.login(smtp_user, smtp_password)
+        server.send_message(msg)
+
+
+def store_verification_code(uid, code):
+    expires_at = datetime.utcnow() + timedelta(minutes=TWOFA_CODE_TTL_MINUTES)
+    with db() as conn:
+        execute(conn,
+            "UPDATE users SET verification_code=%s, verification_expires_at=%s WHERE id=%s",
+            (code, expires_at, uid))
+    return expires_at
+
+
+def clear_verification_code(uid):
+    with db() as conn:
+        execute(conn,
+            "UPDATE users SET verification_code=NULL, verification_expires_at=NULL WHERE id=%s",
+            (uid,))
+
+
 def init_db():
     with db() as conn:
         execute(conn, """CREATE TABLE IF NOT EXISTS users (
@@ -86,7 +138,11 @@ def init_db():
             password_hash TEXT NOT NULL,
             start_date TEXT NOT NULL,
             is_admin INTEGER NOT NULL DEFAULT 0,
-            is_private INTEGER NOT NULL DEFAULT 0
+            is_private INTEGER NOT NULL DEFAULT 0,
+            two_factor_enabled INTEGER NOT NULL DEFAULT 0,
+            email_verified INTEGER NOT NULL DEFAULT 1,
+            verification_code TEXT DEFAULT NULL,
+            verification_expires_at TIMESTAMP DEFAULT NULL
         )""")
         execute(conn, """CREATE TABLE IF NOT EXISTS entries (
             id SERIAL PRIMARY KEY,
@@ -132,6 +188,14 @@ def init_db():
                     suffix += 1
                 execute(conn, "UPDATE users SET username=%s WHERE id=%s",
                         (candidate, row["id"]))
+        if "two_factor_enabled" not in existing_cols:
+            execute(conn, "ALTER TABLE users ADD COLUMN two_factor_enabled INTEGER NOT NULL DEFAULT 0")
+        if "email_verified" not in existing_cols:
+            execute(conn, "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1")
+        if "verification_code" not in existing_cols:
+            execute(conn, "ALTER TABLE users ADD COLUMN verification_code TEXT DEFAULT NULL")
+        if "verification_expires_at" not in existing_cols:
+            execute(conn, "ALTER TABLE users ADD COLUMN verification_expires_at TIMESTAMP DEFAULT NULL")
 
         # Promote superadmins
         for su in SUPERADMIN_USERNAMES:
@@ -180,12 +244,12 @@ def index():
 def auth():
     mode = request.args.get("mode", "login")
     if request.method == "POST":
-        mode     = request.form.get("mode", "login")
-        email    = request.form.get("email", "").strip().lower()
+        mode = request.form.get("mode", "login")
+        email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
 
         if mode == "signup":
-            name     = request.form.get("name", "").strip()
+            name = request.form.get("name", "").strip()
             username = request.form.get("username", "").strip().lower()
             if not name or len(password) < 8:
                 flash("Ism kiriting va kamida 8 belgili parol tanlang.", "error")
@@ -198,20 +262,34 @@ def auth():
                     if fetchone(conn, "SELECT 1 FROM users WHERE username=%s", (username,)):
                         flash("Bu foydalanuvchi nomi band. Boshqasini tanlang.", "error")
                         return render_template("auth.html", mode=mode)
-                    execute(conn,
-                        "INSERT INTO users(name,username,email,password_hash,start_date) "
-                        "VALUES(%s,%s,%s,%s,%s)",
+                    cur = execute(conn,
+                        "INSERT INTO users(name,username,email,password_hash,start_date,email_verified,two_factor_enabled) "
+                        "VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                         (name, username, email, generate_password_hash(password),
-                         date.today().isoformat()))
+                         date.today().isoformat(), 0, 0))
+                    user_id = cur.fetchone()["id"]
             except psycopg2.errors.UniqueViolation:
                 flash("Bu email allaqachon ro'yxatdan o'tgan.", "error")
                 return render_template("auth.html", mode=mode)
 
-            with db() as conn:
-                user = fetchone(conn, "SELECT id,name FROM users WHERE email=%s", (email,))
-            session["user_id"] = user["id"]
-            session["name"]    = user["name"]
-            return redirect(url_for("dashboard"))
+            session["pending_user_id"] = user_id
+            session["pending_email"] = email
+            session["pending_verification_type"] = "signup"
+            code = generate_code()
+            try:
+                send_verification_email(email, code)
+                store_verification_code(user_id, code)
+            except Exception as exc:
+                flash("Tasdiqlash kodi yuborilmadi. SMTP sozlamalari tekshirilishi kerak: " + str(exc), "error")
+                with db() as conn:
+                    execute(conn, "DELETE FROM users WHERE id=%s", (user_id,))
+                session.pop("pending_user_id", None)
+                session.pop("pending_email", None)
+                session.pop("pending_verification_type", None)
+                return render_template("auth.html", mode=mode)
+
+            flash("Tasdiqlash kodi emailingizga yuborildi.", "success")
+            return redirect(url_for("verify_code"))
 
         else:
             login_val = request.form.get("email", "").strip().lower()
@@ -220,12 +298,87 @@ def auth():
                     "SELECT * FROM users WHERE LOWER(email)=%s OR LOWER(username)=%s",
                     (login_val, login_val))
             if user and check_password_hash(user["password_hash"], password):
+                if user["email_verified"] == 0:
+                    session["pending_user_id"] = user["id"]
+                    session["pending_email"] = user["email"]
+                    session["pending_verification_type"] = "signup"
+                    code = generate_code()
+                    try:
+                        send_verification_email(user["email"], code)
+                        store_verification_code(user["id"], code)
+                    except Exception as exc:
+                        flash("Tasdiqlash kodi yuborilmadi: " + str(exc), "error")
+                        return render_template("auth.html", mode=mode)
+                    flash("Hisobingiz hali tasdiqlanmagan. Tasdiqlash kodi emailingizga yuborildi.", "success")
+                    return redirect(url_for("verify_code"))
+
+                if user["two_factor_enabled"]:
+                    session["pending_user_id"] = user["id"]
+                    session["pending_email"] = user["email"]
+                    session["pending_verification_type"] = "login"
+                    code = generate_code()
+                    try:
+                        send_verification_email(user["email"], code)
+                        store_verification_code(user["id"], code)
+                    except Exception as exc:
+                        flash("2FA kodi yuborilmadi: " + str(exc), "error")
+                        session.pop("pending_user_id", None)
+                        session.pop("pending_email", None)
+                        session.pop("pending_verification_type", None)
+                        return render_template("auth.html", mode=mode)
+                    flash("2FA kodi emailingizga yuborildi.", "success")
+                    return redirect(url_for("verify_code"))
+
                 session["user_id"] = user["id"]
-                session["name"]    = user["name"]
+                session["name"] = user["name"]
                 return redirect(url_for("dashboard"))
             flash("Email / foydalanuvchi nomi yoki parol noto'g'ri.", "error")
 
     return render_template("auth.html", mode=mode)
+
+
+@app.route("/verify-code", methods=["GET", "POST"])
+def verify_code():
+    pending_user_id = session.get("pending_user_id")
+    if not pending_user_id:
+        return redirect(url_for("auth"))
+
+    if request.method == "POST":
+        code = request.form.get("code", "").strip()
+        with db() as conn:
+            user = fetchone(conn, "SELECT * FROM users WHERE id=%s", (pending_user_id,))
+        if not user:
+            flash("Foydalanuvchi topilmadi.", "error")
+            return redirect(url_for("auth"))
+
+        expires_at = user["verification_expires_at"]
+        if not user["verification_code"] or user["verification_code"] != code:
+            flash("Noto'g'ri tasdiqlash kodi.", "error")
+            return render_template("auth.html", mode="verify", email=session.get("pending_email"))
+        if expires_at is None or datetime.utcnow() > expires_at:
+            flash("Tasdiqlash kodi muddati tugagan. Yangi kod so'rang.", "error")
+            return render_template("auth.html", mode="verify", email=session.get("pending_email"))
+
+        with db() as conn:
+            execute(conn,
+                "UPDATE users SET email_verified=1, verification_code=NULL, verification_expires_at=NULL WHERE id=%s",
+                (pending_user_id,))
+
+        clear_verification_code(pending_user_id)
+
+        session["user_id"] = user["id"]
+        session["name"] = user["name"]
+        session.pop("pending_user_id", None)
+        session.pop("pending_email", None)
+        session.pop("pending_verification_type", None)
+
+        if user["two_factor_enabled"]:
+            flash("2FA tasdiqlandi. Xush kelibsiz!", "success")
+        else:
+            flash("Email tasdiqlandi. Xush kelibsiz!", "success")
+        return redirect(url_for("dashboard"))
+
+    return render_template("auth.html", mode="verify", email=session.get("pending_email"))
 
 
 @app.route("/logout")
@@ -263,7 +416,7 @@ def settings():
     uid = session["user_id"]
     with db() as conn:
         user = fetchone(conn,
-            "SELECT id,name,username,email,is_private FROM users WHERE id=%s", (uid,))
+            "SELECT id,name,username,email,is_private,two_factor_enabled FROM users WHERE id=%s", (uid,))
 
     if request.method == "POST":
         action = request.form.get("action")
@@ -305,6 +458,28 @@ def settings():
                 execute(conn, "UPDATE users SET password_hash=%s WHERE id=%s",
                         (generate_password_hash(new_pw), uid))
             flash("Parol yangilandi.", "success")
+
+        elif action == "twofa":
+            enable = request.form.get("two_factor_enabled") == "on"
+            with db() as conn:
+                current = fetchone(conn, "SELECT email, two_factor_enabled FROM users WHERE id=%s", (uid,))
+            if enable and not current["two_factor_enabled"]:
+                code = generate_code()
+                try:
+                    send_verification_email(current["email"], code)
+                    store_verification_code(uid, code)
+                    with db() as conn:
+                        execute(conn, "UPDATE users SET two_factor_enabled=1 WHERE id=%s", (uid,))
+                    flash("2FA yoqildi. 6 xonali kod emailingizga yuborildi.", "success")
+                except Exception as exc:
+                    flash("2FA yoqib bo'lmadi. SMTP sozlamalari tekshirilishi kerak: " + str(exc), "error")
+            elif not enable and current["two_factor_enabled"]:
+                with db() as conn:
+                    execute(conn, "UPDATE users SET two_factor_enabled=0 WHERE id=%s", (uid,))
+                    clear_verification_code(uid)
+                flash("2FA o'chirildi.", "success")
+            else:
+                flash("2FA holati o'zgarmadi.", "info")
 
         return redirect(url_for("settings"))
 
