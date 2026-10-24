@@ -1,8 +1,7 @@
-import os, json, re, secrets, random, smtplib
-from datetime import date, datetime, timedelta
+import os, json, re, secrets
+from datetime import date
 from functools import wraps
 from contextlib import contextmanager
-from email.message import EmailMessage
 
 import psycopg2
 import psycopg2.extras
@@ -34,7 +33,6 @@ if DATABASE_URL.startswith("postgres://"):
 
 USERNAME_RE = re.compile(r'^[a-zA-Z0-9_]{3,24}$')
 SUPERADMIN_USERNAMES = ["alishershukhratov456", "alishershukhratov67"]
-TWOFA_CODE_TTL_MINUTES = 10
 
 
 # ── Database helpers ────────────────────────────────────────────────────────
@@ -78,56 +76,6 @@ def is_superadmin_user(uid):
         return bool(u and u["username"].lower() in [s.lower() for s in SUPERADMIN_USERNAMES])
 
 
-def generate_code():
-    return f"{random.randint(100000, 999999):06d}"
-
-
-def send_verification_email(email, code):
-    smtp_host = os.environ.get("SMTP_HOST", "").strip()
-    if not smtp_host:
-        raise RuntimeError("SMTP_HOST is not configured")
-
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    smtp_user = os.environ.get("SMTP_USERNAME", "").strip()
-    smtp_password = os.environ.get("SMTP_PASSWORD", "").strip()
-    smtp_from = os.environ.get("SMTP_FROM", smtp_user or "noreply@localhost").strip()
-
-    msg = EmailMessage()
-    msg["Subject"] = "Bir Qadam — email verification code"
-    msg["From"] = smtp_from
-    msg["To"] = email
-    msg.set_content(
-        "Your 6-digit verification code is: " + code + "\n\n"
-        "This code expires in 10 minutes."
-    )
-
-    with smtplib.SMTP(smtp_host, smtp_port) as server:
-        server.ehlo()
-        if smtp_user and smtp_password:
-            try:
-                server.starttls()
-            except smtplib.SMTPNotSupportedError:
-                pass
-            server.login(smtp_user, smtp_password)
-        server.send_message(msg)
-
-
-def store_verification_code(uid, code):
-    expires_at = datetime.utcnow() + timedelta(minutes=TWOFA_CODE_TTL_MINUTES)
-    with db() as conn:
-        execute(conn,
-            "UPDATE users SET verification_code=%s, verification_expires_at=%s WHERE id=%s",
-            (code, expires_at, uid))
-    return expires_at
-
-
-def clear_verification_code(uid):
-    with db() as conn:
-        execute(conn,
-            "UPDATE users SET verification_code=NULL, verification_expires_at=NULL WHERE id=%s",
-            (uid,))
-
-
 def init_db():
     with db() as conn:
         execute(conn, """CREATE TABLE IF NOT EXISTS users (
@@ -138,11 +86,7 @@ def init_db():
             password_hash TEXT NOT NULL,
             start_date TEXT NOT NULL,
             is_admin INTEGER NOT NULL DEFAULT 0,
-            is_private INTEGER NOT NULL DEFAULT 0,
-            two_factor_enabled INTEGER NOT NULL DEFAULT 0,
-            email_verified INTEGER NOT NULL DEFAULT 1,
-            verification_code TEXT DEFAULT NULL,
-            verification_expires_at TIMESTAMP DEFAULT NULL
+            is_private INTEGER NOT NULL DEFAULT 0
         )""")
         execute(conn, """CREATE TABLE IF NOT EXISTS entries (
             id SERIAL PRIMARY KEY,
@@ -164,7 +108,55 @@ def init_db():
             fired INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )""")
+        execute(conn, """CREATE TABLE IF NOT EXISTS messages (
+            id SERIAL PRIMARY KEY,
+            sender_id INTEGER NOT NULL,
+            receiver_id INTEGER NOT NULL,
+            body TEXT NOT NULL,
+            sent_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            is_read INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(sender_id) REFERENCES users(id),
+            FOREIGN KEY(receiver_id) REFERENCES users(id)
+        )""")
+        execute(conn, """CREATE TABLE IF NOT EXISTS chat_groups (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            creator_id INTEGER NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            FOREIGN KEY(creator_id) REFERENCES users(id)
+        )""")
+        execute(conn, """CREATE TABLE IF NOT EXISTS group_members (
+            id SERIAL PRIMARY KEY,
+            group_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            joined_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            UNIQUE(group_id, user_id),
+            FOREIGN KEY(group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )""")
+        execute(conn, """CREATE TABLE IF NOT EXISTS group_messages (
+            id SERIAL PRIMARY KEY,
+            group_id INTEGER NOT NULL,
+            sender_id INTEGER NOT NULL,
+            body TEXT NOT NULL,
+            sent_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            FOREIGN KEY(group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,
+            FOREIGN KEY(sender_id) REFERENCES users(id)
+        )""")
 
+        # Rename old 'groups' table to 'chat_groups' if it exists
+        execute(conn, """
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='groups')
+                   AND NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='chat_groups')
+                THEN
+                    ALTER TABLE groups RENAME TO chat_groups;
+                END IF;
+            END $$;
+        """)
         existing_cols = {
             r["column_name"]
             for r in fetchall(conn,
@@ -188,14 +180,6 @@ def init_db():
                     suffix += 1
                 execute(conn, "UPDATE users SET username=%s WHERE id=%s",
                         (candidate, row["id"]))
-        if "two_factor_enabled" not in existing_cols:
-            execute(conn, "ALTER TABLE users ADD COLUMN two_factor_enabled INTEGER NOT NULL DEFAULT 0")
-        if "email_verified" not in existing_cols:
-            execute(conn, "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1")
-        if "verification_code" not in existing_cols:
-            execute(conn, "ALTER TABLE users ADD COLUMN verification_code TEXT DEFAULT NULL")
-        if "verification_expires_at" not in existing_cols:
-            execute(conn, "ALTER TABLE users ADD COLUMN verification_expires_at TIMESTAMP DEFAULT NULL")
 
         # Promote superadmins
         for su in SUPERADMIN_USERNAMES:
@@ -205,6 +189,14 @@ def init_db():
         admin_email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
         if admin_email:
             execute(conn, "UPDATE users SET is_admin=1 WHERE LOWER(email)=%s", (admin_email,))
+
+
+def chat_template_vars(uid):
+    return {
+        "superadmin_usernames": SUPERADMIN_USERNAMES,
+        "superadmin_username": SUPERADMIN_USERNAMES[0] if SUPERADMIN_USERNAMES else None,
+        "is_superadmin": is_superadmin_user(uid),
+    }
 
 
 # ── Auth decorators ────────────────────────────────────────────────────────
@@ -244,12 +236,12 @@ def index():
 def auth():
     mode = request.args.get("mode", "login")
     if request.method == "POST":
-        mode = request.form.get("mode", "login")
-        email = request.form.get("email", "").strip().lower()
+        mode     = request.form.get("mode", "login")
+        email    = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
 
         if mode == "signup":
-            name = request.form.get("name", "").strip()
+            name     = request.form.get("name", "").strip()
             username = request.form.get("username", "").strip().lower()
             if not name or len(password) < 8:
                 flash("Ism kiriting va kamida 8 belgili parol tanlang.", "error")
@@ -262,34 +254,20 @@ def auth():
                     if fetchone(conn, "SELECT 1 FROM users WHERE username=%s", (username,)):
                         flash("Bu foydalanuvchi nomi band. Boshqasini tanlang.", "error")
                         return render_template("auth.html", mode=mode)
-                    cur = execute(conn,
-                        "INSERT INTO users(name,username,email,password_hash,start_date,email_verified,two_factor_enabled) "
-                        "VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                    execute(conn,
+                        "INSERT INTO users(name,username,email,password_hash,start_date) "
+                        "VALUES(%s,%s,%s,%s,%s)",
                         (name, username, email, generate_password_hash(password),
-                         date.today().isoformat(), 0, 0))
-                    user_id = cur.fetchone()["id"]
+                         date.today().isoformat()))
             except psycopg2.errors.UniqueViolation:
                 flash("Bu email allaqachon ro'yxatdan o'tgan.", "error")
                 return render_template("auth.html", mode=mode)
 
-            session["pending_user_id"] = user_id
-            session["pending_email"] = email
-            session["pending_verification_type"] = "signup"
-            code = generate_code()
-            try:
-                send_verification_email(email, code)
-                store_verification_code(user_id, code)
-            except Exception as exc:
-                flash("Tasdiqlash kodi yuborilmadi. SMTP sozlamalari tekshirilishi kerak: " + str(exc), "error")
-                with db() as conn:
-                    execute(conn, "DELETE FROM users WHERE id=%s", (user_id,))
-                session.pop("pending_user_id", None)
-                session.pop("pending_email", None)
-                session.pop("pending_verification_type", None)
-                return render_template("auth.html", mode=mode)
-
-            flash("Tasdiqlash kodi emailingizga yuborildi.", "success")
-            return redirect(url_for("verify_code"))
+            with db() as conn:
+                user = fetchone(conn, "SELECT id,name FROM users WHERE email=%s", (email,))
+            session["user_id"] = user["id"]
+            session["name"]    = user["name"]
+            return redirect(url_for("dashboard"))
 
         else:
             login_val = request.form.get("email", "").strip().lower()
@@ -298,87 +276,12 @@ def auth():
                     "SELECT * FROM users WHERE LOWER(email)=%s OR LOWER(username)=%s",
                     (login_val, login_val))
             if user and check_password_hash(user["password_hash"], password):
-                if user["email_verified"] == 0:
-                    session["pending_user_id"] = user["id"]
-                    session["pending_email"] = user["email"]
-                    session["pending_verification_type"] = "signup"
-                    code = generate_code()
-                    try:
-                        send_verification_email(user["email"], code)
-                        store_verification_code(user["id"], code)
-                    except Exception as exc:
-                        flash("Tasdiqlash kodi yuborilmadi: " + str(exc), "error")
-                        return render_template("auth.html", mode=mode)
-                    flash("Hisobingiz hali tasdiqlanmagan. Tasdiqlash kodi emailingizga yuborildi.", "success")
-                    return redirect(url_for("verify_code"))
-
-                if user["two_factor_enabled"]:
-                    session["pending_user_id"] = user["id"]
-                    session["pending_email"] = user["email"]
-                    session["pending_verification_type"] = "login"
-                    code = generate_code()
-                    try:
-                        send_verification_email(user["email"], code)
-                        store_verification_code(user["id"], code)
-                    except Exception as exc:
-                        flash("2FA kodi yuborilmadi: " + str(exc), "error")
-                        session.pop("pending_user_id", None)
-                        session.pop("pending_email", None)
-                        session.pop("pending_verification_type", None)
-                        return render_template("auth.html", mode=mode)
-                    flash("2FA kodi emailingizga yuborildi.", "success")
-                    return redirect(url_for("verify_code"))
-
                 session["user_id"] = user["id"]
-                session["name"] = user["name"]
+                session["name"]    = user["name"]
                 return redirect(url_for("dashboard"))
             flash("Email / foydalanuvchi nomi yoki parol noto'g'ri.", "error")
 
     return render_template("auth.html", mode=mode)
-
-
-@app.route("/verify-code", methods=["GET", "POST"])
-def verify_code():
-    pending_user_id = session.get("pending_user_id")
-    if not pending_user_id:
-        return redirect(url_for("auth"))
-
-    if request.method == "POST":
-        code = request.form.get("code", "").strip()
-        with db() as conn:
-            user = fetchone(conn, "SELECT * FROM users WHERE id=%s", (pending_user_id,))
-        if not user:
-            flash("Foydalanuvchi topilmadi.", "error")
-            return redirect(url_for("auth"))
-
-        expires_at = user["verification_expires_at"]
-        if not user["verification_code"] or user["verification_code"] != code:
-            flash("Noto'g'ri tasdiqlash kodi.", "error")
-            return render_template("auth.html", mode="verify", email=session.get("pending_email"))
-        if expires_at is None or datetime.utcnow() > expires_at:
-            flash("Tasdiqlash kodi muddati tugagan. Yangi kod so'rang.", "error")
-            return render_template("auth.html", mode="verify", email=session.get("pending_email"))
-
-        with db() as conn:
-            execute(conn,
-                "UPDATE users SET email_verified=1, verification_code=NULL, verification_expires_at=NULL WHERE id=%s",
-                (pending_user_id,))
-
-        clear_verification_code(pending_user_id)
-
-        session["user_id"] = user["id"]
-        session["name"] = user["name"]
-        session.pop("pending_user_id", None)
-        session.pop("pending_email", None)
-        session.pop("pending_verification_type", None)
-
-        if user["two_factor_enabled"]:
-            flash("2FA tasdiqlandi. Xush kelibsiz!", "success")
-        else:
-            flash("Email tasdiqlandi. Xush kelibsiz!", "success")
-        return redirect(url_for("dashboard"))
-
-    return render_template("auth.html", mode="verify", email=session.get("pending_email"))
 
 
 @app.route("/logout")
@@ -416,7 +319,7 @@ def settings():
     uid = session["user_id"]
     with db() as conn:
         user = fetchone(conn,
-            "SELECT id,name,username,email,is_private,two_factor_enabled FROM users WHERE id=%s", (uid,))
+            "SELECT id,name,username,email,is_private FROM users WHERE id=%s", (uid,))
 
     if request.method == "POST":
         action = request.form.get("action")
@@ -459,34 +362,424 @@ def settings():
                         (generate_password_hash(new_pw), uid))
             flash("Parol yangilandi.", "success")
 
-        elif action == "twofa":
-            enable = request.form.get("two_factor_enabled") == "on"
-            with db() as conn:
-                current = fetchone(conn, "SELECT email, two_factor_enabled FROM users WHERE id=%s", (uid,))
-            if enable and not current["two_factor_enabled"]:
-                code = generate_code()
-                try:
-                    send_verification_email(current["email"], code)
-                    store_verification_code(uid, code)
-                    with db() as conn:
-                        execute(conn, "UPDATE users SET two_factor_enabled=1 WHERE id=%s", (uid,))
-                    flash("2FA yoqildi. 6 xonali kod emailingizga yuborildi.", "success")
-                except Exception as exc:
-                    flash("2FA yoqib bo'lmadi. SMTP sozlamalari tekshirilishi kerak: " + str(exc), "error")
-            elif not enable and current["two_factor_enabled"]:
-                with db() as conn:
-                    execute(conn, "UPDATE users SET two_factor_enabled=0 WHERE id=%s", (uid,))
-                    clear_verification_code(uid)
-                flash("2FA o'chirildi.", "success")
-            else:
-                flash("2FA holati o'zgarmadi.", "info")
-
         return redirect(url_for("settings"))
 
     return render_template("account_settings.html", user=user)
 
 
-# ── Entry API ─────────────────────────────────────────────────────────────
+# ── Chat helpers ─────────────────────────────────────────────────────────
+def get_chat_sidebar_data(conn, uid):
+    convos = fetchall(conn, """
+        SELECT u.id, u.name, u.username, u.is_private,
+               MAX(m.sent_at) AS last_at,
+               SUM(CASE WHEN m.receiver_id=%s AND m.is_read=0 THEN 1 ELSE 0 END) AS unread
+        FROM messages m
+        JOIN users u ON u.id = CASE WHEN m.sender_id=%s THEN m.receiver_id ELSE m.sender_id END
+        WHERE m.sender_id=%s OR m.receiver_id=%s
+        GROUP BY u.id, u.name, u.username, u.is_private
+        ORDER BY last_at DESC
+    """, (uid, uid, uid, uid))
+
+    my_groups = fetchall(conn, """
+        SELECT g.id, g.name, g.description, g.creator_id, g.created_at,
+               gm.role AS my_role,
+               (SELECT COUNT(*) FROM group_members WHERE group_id=g.id) AS member_count,
+               (SELECT MAX(gm2.sent_at) FROM group_messages gm2 WHERE gm2.group_id=g.id) AS last_at
+        FROM chat_groups g
+        JOIN group_members gm ON gm.group_id=g.id AND gm.user_id=%s
+        ORDER BY COALESCE(last_at, g.created_at) DESC
+    """, (uid,))
+
+    all_users = fetchall(conn, """
+        SELECT u.id, u.name, u.username, u.is_private, u.is_admin,
+               (SELECT COUNT(*) FROM entries e WHERE e.user_id=u.id AND e.completed=1) AS completed_count
+        FROM users u
+        WHERE u.id != %s
+        ORDER BY u.name ASC
+    """, (uid,))
+
+    return convos, my_groups, all_users
+
+
+# ── Chat views ──────────────────────────────────────────────────────────
+@app.route("/chat")
+@login_required
+def chat():
+    uid = session["user_id"]
+    with db() as conn:
+        convos, my_groups, all_users = get_chat_sidebar_data(conn, uid)
+    return render_template("chat.html", convos=convos, my_groups=my_groups,
+                            all_users=all_users, my_id=uid, mode=None,
+                            is_superadmin=is_superadmin_user(uid),
+                            **chat_template_vars(uid))
+
+
+@app.route("/chat/<string:username>")
+@login_required
+def chat_with(username):
+    uid = session["user_id"]
+    with db() as conn:
+        partner = fetchone(conn,
+            "SELECT id,name,username,is_private,is_admin FROM users WHERE username=%s", (username,))
+        if not partner or partner["id"] == uid:
+            flash("Foydalanuvchi topilmadi.", "error")
+            return redirect(url_for("chat"))
+        execute(conn,
+            "UPDATE messages SET is_read=1 WHERE sender_id=%s AND receiver_id=%s",
+            (partner["id"], uid))
+        msgs = fetchall(conn, """
+            SELECT m.id, m.sender_id, m.body, m.sent_at, m.is_read,
+                   u.name AS sender_name
+            FROM messages m
+            JOIN users u ON u.id = m.sender_id
+            WHERE (m.sender_id=%s AND m.receiver_id=%s)
+               OR (m.sender_id=%s AND m.receiver_id=%s)
+            ORDER BY m.sent_at ASC
+        """, (uid, partner["id"], partner["id"], uid))
+        convos, my_groups, all_users = get_chat_sidebar_data(conn, uid)
+    return render_template("chat.html", convos=convos, my_groups=my_groups,
+                            all_users=all_users, partner=partner,
+                            msgs=msgs, my_id=uid, mode="dm",
+                            is_superadmin=is_superadmin_user(uid),
+                            **chat_template_vars(uid))
+
+
+@app.route("/chat/group/<int:group_id>")
+@login_required
+def chat_group(group_id):
+    uid = session["user_id"]
+    with db() as conn:
+        my_membership = fetchone(conn,
+            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
+        if not my_membership:
+            flash("Siz bu guruh a'zosi emassiz.", "error")
+            return redirect(url_for("chat"))
+        group = fetchone(conn,
+            "SELECT id, name, description, creator_id, created_at FROM chat_groups WHERE id=%s", (group_id,))
+        if not group:
+            flash("Guruh topilmadi.", "error")
+            return redirect(url_for("chat"))
+        group_members = fetchall(conn, """
+            SELECT u.id, u.name, u.username, u.is_admin AS site_admin, gm.role, gm.joined_at
+            FROM group_members gm
+            JOIN users u ON u.id = gm.user_id
+            WHERE gm.group_id = %s
+            ORDER BY CASE gm.role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END, u.name ASC
+        """, (group_id,))
+        msgs = fetchall(conn, """
+            SELECT gm.id, gm.sender_id, u.name AS sender_name, u.username AS sender_username,
+                   gmem.role AS sender_role, gm.body, gm.sent_at
+            FROM group_messages gm
+            JOIN users u ON u.id = gm.sender_id
+            LEFT JOIN group_members gmem ON gmem.group_id = gm.group_id AND gmem.user_id = gm.sender_id
+            WHERE gm.group_id = %s
+            ORDER BY gm.sent_at ASC
+        """, (group_id,))
+        convos, my_groups, all_users = get_chat_sidebar_data(conn, uid)
+    return render_template("chat.html", convos=convos, my_groups=my_groups,
+                            all_users=all_users, active_group=group,
+                            group_members=group_members, my_role=my_membership["role"],
+                            msgs=msgs, my_id=uid, mode="group",
+                            is_superadmin=is_superadmin_user(uid),
+                            **chat_template_vars(uid))
+
+
+# ── Search & user APIs ───────────────────────────────────────────────────────
+@app.route("/api/search")
+@login_required
+def search_users():
+    q = request.args.get("q", "").strip()
+    if len(q) < 2:
+        return jsonify([])
+    uid = session["user_id"]
+    with db() as conn:
+        rows = fetchall(conn, """
+            SELECT id, name, username, is_private,
+                   (SELECT COUNT(*) FROM entries e WHERE e.user_id=users.id AND e.completed=1) AS completed_count
+            FROM users
+            WHERE (username ILIKE %s OR name ILIKE %s) AND id != %s
+            ORDER BY username
+            LIMIT 20
+        """, (f"%{q}%", f"%{q}%", uid))
+    return jsonify([{
+        "id":         r["id"],
+        "name":       r["name"],
+        "username":   r["username"],
+        "is_private": bool(r["is_private"]),
+        "completed":  r["completed_count"] if not r["is_private"] else None
+    } for r in rows])
+
+
+@app.route("/api/all-users")
+@login_required
+def get_all_users():
+    uid = session["user_id"]
+    with db() as conn:
+        rows = fetchall(conn, """
+            SELECT u.id, u.name, u.username, u.is_private, u.is_admin,
+                   (SELECT COUNT(*) FROM entries e WHERE e.user_id=u.id AND e.completed=1) AS completed_count
+            FROM users u
+            WHERE u.id != %s
+            ORDER BY u.name ASC
+        """, (uid,))
+    return jsonify([{
+        "id":         r["id"],
+        "name":       r["name"],
+        "username":   r["username"],
+        "is_private": bool(r["is_private"]),
+        "is_admin":   bool(r["is_admin"]),
+        "completed":  r["completed_count"] if not r["is_private"] else None
+    } for r in rows])
+
+
+# ── Direct chat API ────────────────────────────────────────────────────────
+@app.route("/api/chat/<int:partner_id>", methods=["POST"])
+@login_required
+def send_message(partner_id):
+    uid  = session["user_id"]
+    body = (request.get_json(silent=True) or {}).get("body", "").strip()
+    if not body or len(body) > 2000:
+        return jsonify(ok=False, error="Xabar bo'sh yoki juda uzun."), 400
+    with db() as conn:
+        partner = fetchone(conn, "SELECT id FROM users WHERE id=%s", (partner_id,))
+        if not partner:
+            return jsonify(ok=False, error="Foydalanuvchi topilmadi."), 404
+        cur = execute(conn,
+            "INSERT INTO messages(sender_id,receiver_id,body) VALUES(%s,%s,%s) RETURNING id,sent_at",
+            (uid, partner_id, body))
+        row = cur.fetchone()
+    return jsonify(ok=True, id=row["id"],
+                   sent_at=str(row["sent_at"]), body=body)
+
+
+@app.route("/api/chat/<int:partner_id>/poll")
+@login_required
+def poll_messages(partner_id):
+    uid   = session["user_id"]
+    after = request.args.get("after", "1970-01-01 00:00:00")
+    with db() as conn:
+        msgs = fetchall(conn, """
+            SELECT m.id, m.sender_id, m.body, m.sent_at
+            FROM messages m
+            WHERE ((m.sender_id=%s AND m.receiver_id=%s)
+                OR (m.sender_id=%s AND m.receiver_id=%s))
+              AND m.sent_at > %s
+            ORDER BY m.sent_at ASC
+        """, (uid, partner_id, partner_id, uid, after))
+        execute(conn,
+            "UPDATE messages SET is_read=1 WHERE sender_id=%s AND receiver_id=%s",
+            (partner_id, uid))
+    return jsonify([{"id": m["id"], "sender_id": m["sender_id"],
+                     "body": m["body"], "sent_at": str(m["sent_at"])} for m in msgs])
+
+
+# ── Groups API ──────────────────────────────────────────────────────────
+@app.route("/api/groups", methods=["GET", "POST"])
+@login_required
+def api_groups():
+    uid = session["user_id"]
+    if request.method == "POST":
+        data        = request.get_json(silent=True) or {}
+        name        = (data.get("name") or "").strip()
+        description = (data.get("description") or "").strip()
+        member_ids  = data.get("member_ids") or []
+        if not name or len(name) > 80:
+            return jsonify(ok=False, error="Guruh nomi 1 dan 80 belgigacha bo'lishi kerak."), 400
+        with db() as conn:
+            cur = execute(conn,
+                "INSERT INTO chat_groups(name, description, creator_id) VALUES(%s,%s,%s) RETURNING id",
+                (name, description, uid))
+            gid = cur.fetchone()["id"]
+            execute(conn,
+                "INSERT INTO group_members(group_id, user_id, role) VALUES(%s,%s,'owner')",
+                (gid, uid))
+            for mid in member_ids:
+                try:
+                    mid = int(mid)
+                    if mid != uid:
+                        execute(conn,
+                            "INSERT INTO group_members(group_id, user_id, role) "
+                            "VALUES(%s,%s,'member') ON CONFLICT DO NOTHING",
+                            (gid, mid))
+                except (ValueError, TypeError):
+                    pass
+        return jsonify(ok=True, group_id=gid)
+
+    with db() as conn:
+        groups = fetchall(conn, """
+            SELECT g.id, g.name, g.description, g.creator_id, g.created_at,
+                   gm.role AS my_role,
+                   (SELECT COUNT(*) FROM group_members WHERE group_id=g.id) AS member_count
+            FROM chat_groups g
+            JOIN group_members gm ON gm.group_id=g.id AND gm.user_id=%s
+            ORDER BY g.id DESC
+        """, (uid,))
+    return jsonify([dict(g) for g in groups])
+
+
+@app.route("/api/group/<int:group_id>/send", methods=["POST"])
+@login_required
+def send_group_message(group_id):
+    uid  = session["user_id"]
+    body = (request.get_json(silent=True) or {}).get("body", "").strip()
+    if not body or len(body) > 2000:
+        return jsonify(ok=False, error="Xabar bo'sh yoki juda uzun."), 400
+    with db() as conn:
+        member = fetchone(conn,
+            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
+        if not member:
+            return jsonify(ok=False, error="Siz bu guruh a'zosi emassiz."), 403
+        cur = execute(conn,
+            "INSERT INTO group_messages(group_id, sender_id, body) VALUES(%s,%s,%s) RETURNING id,sent_at",
+            (group_id, uid, body))
+        row = cur.fetchone()
+        sender = fetchone(conn, "SELECT name, username FROM users WHERE id=%s", (uid,))
+    return jsonify(ok=True, id=row["id"], sent_at=str(row["sent_at"]), body=body,
+                   sender_id=uid, sender_name=sender["name"], sender_role=member["role"])
+
+
+@app.route("/api/group/<int:group_id>/poll")
+@login_required
+def poll_group_messages(group_id):
+    uid   = session["user_id"]
+    after = request.args.get("after", "1970-01-01 00:00:00")
+    with db() as conn:
+        member = fetchone(conn,
+            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
+        if not member:
+            return jsonify([]), 403
+        msgs = fetchall(conn, """
+            SELECT gm.id, gm.sender_id, gm.body, gm.sent_at,
+                   u.name AS sender_name, u.username AS sender_username,
+                   gmem.role AS sender_role
+            FROM group_messages gm
+            JOIN users u ON u.id = gm.sender_id
+            LEFT JOIN group_members gmem ON gmem.group_id = gm.group_id AND gmem.user_id = gm.sender_id
+            WHERE gm.group_id = %s AND gm.sent_at > %s
+            ORDER BY gm.sent_at ASC
+        """, (group_id, after))
+    return jsonify([{**dict(m), "sent_at": str(m["sent_at"])} for m in msgs])
+
+
+@app.route("/api/group/<int:group_id>/details")
+@login_required
+def group_details(group_id):
+    uid = session["user_id"]
+    with db() as conn:
+        my_membership = fetchone(conn,
+            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
+        if not my_membership:
+            return jsonify(ok=False, error="Siz bu guruh a'zosi emassiz."), 403
+        group = fetchone(conn,
+            "SELECT id, name, description, creator_id, created_at FROM chat_groups WHERE id=%s", (group_id,))
+        members = fetchall(conn, """
+            SELECT u.id, u.name, u.username, gm.role, gm.joined_at
+            FROM group_members gm
+            JOIN users u ON u.id = gm.user_id
+            WHERE gm.group_id = %s
+            ORDER BY CASE gm.role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END, u.name ASC
+        """, (group_id,))
+    return jsonify(ok=True, group=dict(group), my_role=my_membership["role"],
+                   members=[dict(m) for m in members])
+
+
+@app.route("/api/group/<int:group_id>/members", methods=["POST"])
+@login_required
+def add_group_member(group_id):
+    uid        = session["user_id"]
+    data       = request.get_json(silent=True) or {}
+    target_uid = data.get("user_id")
+    if not target_uid:
+        return jsonify(ok=False, error="Foydalanuvchi ko'rsatilmadi."), 400
+    with db() as conn:
+        my_membership = fetchone(conn,
+            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
+        if not my_membership or my_membership["role"] not in ("owner", "admin"):
+            return jsonify(ok=False, error="Faqat guruh egasi yoki admin a'zo qo'sha oladi."), 403
+        if not fetchone(conn, "SELECT id FROM users WHERE id=%s", (target_uid,)):
+            return jsonify(ok=False, error="Foydalanuvchi topilmadi."), 404
+        try:
+            execute(conn,
+                "INSERT INTO group_members(group_id, user_id, role) VALUES(%s,%s,'member')",
+                (group_id, target_uid))
+        except psycopg2.errors.UniqueViolation:
+            return jsonify(ok=False, error="Bu foydalanuvchi allaqachon guruhda."), 400
+    return jsonify(ok=True)
+
+
+@app.route("/api/group/<int:group_id>/members/<int:target_id>/role", methods=["POST"])
+@login_required
+def update_group_member_role(group_id, target_id):
+    uid      = session["user_id"]
+    data     = request.get_json(silent=True) or {}
+    new_role = (data.get("role") or "").strip().lower()
+    if new_role not in ("admin", "member"):
+        return jsonify(ok=False, error="Noto'g'ri rol tanlandi."), 400
+    with db() as conn:
+        my_membership = fetchone(conn,
+            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
+        is_super = is_superadmin_user(uid)
+        if not is_super and (not my_membership or my_membership["role"] != "owner"):
+            return jsonify(ok=False, error="Faqat guruh egasi admin tayinlashi mumkin."), 403
+        target = fetchone(conn,
+            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, target_id))
+        if not target:
+            return jsonify(ok=False, error="Guruh a'zosi topilmadi."), 404
+        if target["role"] == "owner":
+            return jsonify(ok=False, error="Guruh egasining rolini o'zgartirib bo'lmaydi."), 400
+        execute(conn,
+            "UPDATE group_members SET role=%s WHERE group_id=%s AND user_id=%s",
+            (new_role, group_id, target_id))
+    return jsonify(ok=True)
+
+
+@app.route("/api/group/<int:group_id>/members/<int:target_id>", methods=["DELETE"])
+@login_required
+def remove_group_member(group_id, target_id):
+    uid = session["user_id"]
+    with db() as conn:
+        my_membership = fetchone(conn,
+            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
+        if not my_membership:
+            return jsonify(ok=False, error="Ruxsat yo'q."), 403
+        target = fetchone(conn,
+            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, target_id))
+        if not target:
+            return jsonify(ok=False, error="A'zo topilmadi."), 404
+        if target_id == uid:
+            if target["role"] == "owner":
+                return jsonify(ok=False, error="Guruh egasi guruhni tark eta olmaydi."), 400
+            execute(conn, "DELETE FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
+            return jsonify(ok=True, left=True)
+        if my_membership["role"] == "owner":
+            execute(conn, "DELETE FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, target_id))
+            return jsonify(ok=True)
+        elif my_membership["role"] == "admin":
+            if target["role"] in ("owner", "admin"):
+                return jsonify(ok=False, error="Admin boshqa adminni yoki egasini chiqara olmaydi."), 403
+            execute(conn, "DELETE FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, target_id))
+            return jsonify(ok=True)
+        return jsonify(ok=False, error="A'zolarni chiqarish huquqiga ega emassiz."), 403
+
+
+@app.route("/api/group/<int:group_id>", methods=["DELETE"])
+@login_required
+def delete_group(group_id):
+    uid = session["user_id"]
+    with db() as conn:
+        my_membership = fetchone(conn,
+            "SELECT role FROM group_members WHERE group_id=%s AND user_id=%s", (group_id, uid))
+        user_row = fetchone(conn, "SELECT is_admin FROM users WHERE id=%s", (uid,))
+        is_site_admin = bool(user_row and user_row["is_admin"])
+        if not is_site_admin and (not my_membership or my_membership["role"] != "owner"):
+            return jsonify(ok=False, error="Faqat guruh egasi guruhni o'chira oladi."), 403
+        execute(conn, "DELETE FROM group_messages WHERE group_id=%s", (group_id,))
+        execute(conn, "DELETE FROM group_members WHERE group_id=%s", (group_id,))
+        execute(conn, "DELETE FROM chat_groups WHERE id=%s", (group_id,))
+    return jsonify(ok=True)
+
+
+# ── Entry API ──────────────────────────────────────────────────────────
 @app.route("/api/entry/<int:day>", methods=["POST"])
 @login_required
 def save_entry(day):
@@ -531,7 +824,7 @@ def get_entries():
     return jsonify({str(r["day"]): dict(r) for r in rows})
 
 
-# ── Reminders ─────────────────────────────────────────────────────────────
+# ── Reminders ──────────────────────────────────────────────────────────
 @app.route("/api/reminders", methods=["GET"])
 @login_required
 def get_reminders():
@@ -574,7 +867,7 @@ def fire_reminder(rid):
     return jsonify(ok=True)
 
 
-# ── Admin ────────────────────────────────────────────────────────────────
+# ── Admin ────────────────────────────────────────────────────────────
 @app.route("/admin")
 @admin_required
 def admin():
