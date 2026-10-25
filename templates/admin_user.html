@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ user.name }} — Progress | Admin</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    body { background:#0b1020; color:#f1f5f9; font-family:'DM Sans',Arial,sans-serif; margin:0; }
+    .wrap { max-width:1100px; margin:auto; padding:36px 22px; }
+    .top-bar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:14px; margin-bottom:32px; }
+    .top-bar h1 { margin:0 0 6px; font-size:26px; }
+    .muted { color:#9ca9c1; font-size:13px; }
+    .btn { display:inline-block; background:#617cf6; color:#fff; padding:10px 18px; border-radius:10px; font-weight:700; font-size:13px; text-decoration:none; }
+    .btn.ghost { background:#1c2640; color:#9ca9c1; }
+
+    /* stats row */
+    .stats { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:28px; }
+    .stat { background:#141c30; border:1px solid #28334b; border-radius:14px; padding:18px 22px; flex:1; min-width:130px; }
+    .stat span { color:#8a96b0; font-size:12px; }
+    .stat h3 { margin:8px 0 0; font-size:28px; }
+
+    /* 30-day grid */
+    .grid-heading { font-size:13px; font-weight:700; color:#9ca9c1; letter-spacing:.8px; margin-bottom:14px; }
+    .day-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(56px,1fr)); gap:8px; margin-bottom:32px; }
+    .day-cell { background:#141c30; border:1px solid #28334b; border-radius:10px; padding:10px 6px; text-align:center; cursor:pointer; transition:.15s; }
+    .day-cell:hover { border-color:#617cf6; }
+    .day-cell.done { background:#0f2e22; border-color:#1e5c3e; }
+    .day-cell.empty { opacity:.4; cursor:default; }
+    .day-cell .num { font-size:11px; font-weight:700; color:#8a96b0; }
+    .day-cell.done .num { color:#6bc9a6; }
+    .day-cell .mood-icon { font-size:18px; margin:4px 0 2px; display:block; }
+    .day-cell .stars { color:#f3b84e; font-size:10px; letter-spacing:1px; }
+
+    /* detail panel */
+    .detail-panel { background:#141c30; border:1px solid #28334b; border-radius:16px; padding:26px; margin-bottom:28px; display:none; }
+    .detail-panel.open { display:block; }
+    .detail-panel h2 { margin:0 0 18px; font-size:18px; }
+    .detail-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:14px; }
+    .answer-card { background:#0f1628; border:1px solid #222f48; border-radius:10px; padding:14px; }
+    .answer-card label { font-size:10px; color:#7a88a3; font-weight:700; letter-spacing:.6px; display:block; margin-bottom:6px; }
+    .answer-card p { margin:0; font-size:13px; line-height:1.6; color:#d4dcec; white-space:pre-wrap; word-break:break-word; }
+    .meta-row { display:flex; gap:18px; flex-wrap:wrap; margin-bottom:16px; }
+    .meta-badge { background:#1a2540; border-radius:8px; padding:8px 14px; font-size:12px; }
+    .meta-badge span { color:#7a88a3; margin-right:6px; }
+    .close-btn { float:right; background:none; border:none; color:#9ca9c1; font-size:20px; cursor:pointer; margin-top:-4px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top-bar">
+    <div>
+      <p class="muted">ADMIN / FOYDALANUVCHI PROGRESSI</p>
+      <h1>{{ user.name }}</h1>
+      <p class="muted">{{ user.email }} · Boshlangan: {{ user.start_date }}</p>
+    </div>
+    <a class="btn ghost" href="{{ url_for('admin') }}">← Admin panelga qaytish</a>
+  </div>
+
+  {% set completed = entries | selectattr('completed') | list | length %}
+  {% set total = entries | length %}
+  {% set avg_rating = (entries | selectattr('rating') | map(attribute='rating') | list) %}
+
+  <div class="stats">
+    <div class="stat">
+      <span>Yakunlangan kunlar</span>
+      <h3>{{ completed }} / 30</h3>
+    </div>
+    <div class="stat">
+      <span>Jami yozuvlar</span>
+      <h3>{{ total }}</h3>
+    </div>
+    <div class="stat">
+      <span>Progress</span>
+      <h3>{{ ((completed / 30) * 100) | round | int }}%</h3>
+    </div>
+    <div class="stat">
+      <span>O'rtacha baho</span>
+      <h3>{% if avg_rating %}{{ (avg_rating | sum / avg_rating | length) | round(1) }}★{% else %}—{% endif %}</h3>
+    </div>
+  </div>
+
+  <p class="grid-heading">30 KUNLIK XARITA — KUN USTIGA BOSING</p>
+  <div class="day-grid" id="day-grid">
+    {% set mood_icons = {0:'', 1:'😢', 2:'😕', 3:'😐', 4:'🙂', 5:'😄'} %}
+    {% set entry_map = {} %}
+    {% for e in entries %}{% if entry_map.update({e.day: e}) %}{% endif %}{% endfor %}
+    {% for n in range(1, 31) %}
+      {% set e = entry_map.get(n) %}
+      <div class="day-cell {{ 'done' if e and e.completed else ('empty' if not e else '') }}"
+           data-day="{{ n }}"
+           {% if e %}
+           data-entry="{{ e | tojson | forceescape }}"
+           {% endif %}>
+        <div class="num">{{ '%02d' % n }}</div>
+        {% if e %}
+          <span class="mood-icon">{{ mood_icons.get(e.mood, '') }}</span>
+          <div class="stars">{% for i in range(e.rating) %}★{% endfor %}</div>
+        {% else %}
+          <span class="mood-icon" style="font-size:12px;color:#444">—</span>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+
+  <div class="detail-panel" id="detail-panel">
+    <button class="close-btn" id="close-detail">✕</button>
+    <h2 id="detail-title"></h2>
+    <div class="meta-row" id="detail-meta"></div>
+    <div class="detail-grid" id="detail-answers"></div>
+  </div>
+
+</div>
+
+<script>
+const moodLabels = {0:'',1:'Juda og\'ir 😢',2:'Unchalik yaxshi emas 😕',3:'O\'rtacha 😐',4:'Yaxshi 🙂',5:'Ajoyib 😄'};
+const dayTitles = ["Men kimman?","Mening kuchli tomonlarim","Mening maqsadlarim","Vaqtimni qadrlayman","Yaxshi odat yarataman","Kitob va bilim","O'zimga ishonch","Telefon va ekran vaqtini boshqarish","Sog'lom kun tartibi","Oilamga mehr","Oilamga yordam","Yaxshi do'st qanday bo'ladi?","Telefonni men boshqaraman","Kitob bilan uchrashuv","Mening kuchli tomonim","Mening kelajakdagi kasbim","Xatolarim — dushmanim emas","Vaqtimni boshqaraman","Bir yaxshilik","Men qancha o'zgardim?","Mening orzularim","Men qiyinchiliklarni yenga olaman","Tanlovlarim","Mening ijodkor tomonim","Mening ovozim bor","Men lider bo'la olaman","O'zimga mehr bilan","Mening o'rganish usulim","Kelajakdagi o'zimga xat","Mening 30 kunlik sayohatim"];
+
+document.getElementById('day-grid').addEventListener('click', e => {
+  const cell = e.target.closest('.day-cell[data-entry]');
+  if (!cell) return;
+  const entry = JSON.parse(cell.dataset.entry);
+  const day = Number(cell.dataset.day);
+  const panel = document.getElementById('detail-panel');
+
+  document.getElementById('detail-title').textContent = `${day}-kun: ${dayTitles[day-1]}`;
+
+  const meta = document.getElementById('detail-meta');
+  meta.innerHTML = `
+    <div class="meta-badge"><span>Sana:</span>${entry.entry_date || '—'}</div>
+    <div class="meta-badge"><span>Kayfiyat:</span>${moodLabels[entry.mood] || '—'}</div>
+    <div class="meta-badge"><span>Baho:</span>${'★'.repeat(entry.rating) || '—'}</div>
+    <div class="meta-badge"><span>Holat:</span>${entry.completed ? '✓ Yakunlangan' : 'Yakunlanmagan'}</div>
+  `;
+
+  const answers = entry.answers || {};
+  const grid = document.getElementById('detail-answers');
+  const items = Object.entries(answers).filter(([k,v]) => v && v.toString().trim());
+  if (items.length) {
+    grid.innerHTML = items.map(([k, v]) => `
+      <div class="answer-card">
+        <label>${k}</label>
+        <p>${v.toString().replace(/</g,'&lt;').replace(/>/g,'&gt;')}</p>
+      </div>`).join('');
+  } else {
+    grid.innerHTML = '<p style="color:#7a88a3;font-size:13px;">Javoblar saqlanmagan.</p>';
+  }
+
+  panel.classList.add('open');
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+});
+
+document.getElementById('close-detail').addEventListener('click', () => {
+  document.getElementById('detail-panel').classList.remove('open');
+});
+</script>
+</body>
+</html>

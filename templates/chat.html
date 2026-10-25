@@ -1,0 +1,985 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Xabarlar va Guruhlar — Bir Qadam</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script defer src="{{ url_for('static', filename='theme.js') }}"></script>
+  <script defer src="{{ url_for('static', filename='reminders.js') }}"></script>
+</head>
+<body class="dashboard-page chat-page-body">
+
+<aside class="sidebar">
+  <a class="brand" href="/dashboard">
+    <span class="brand-mark">✦</span>
+    <span>BIR<span class="brand-light">QADAM</span></span>
+  </a>
+  <div class="side-label">SENING MAKONING</div>
+  <a class="side-item" href="/dashboard">▦ <span>Kundalik</span></a>
+  <a class="side-item" href="/dashboard#calendar">◷ <span>Progress kalendari</span></a>
+  <a class="side-item" href="/dashboard#reminders">🔔 <span>Eslatmalar</span></a>
+  <a class="side-item active" href="/chat">💬 <span>Xabarlar</span></a>
+  <a class="side-item" href="/settings">⚙ <span>Sozlamalar</span></a>
+  <div class="sidebar-bottom">
+    <div class="side-avatar">💬</div>
+    <div class="side-user"><b>Muloqot</b><small>Xabarlar & Guruhlar</small></div>
+    <a class="logout" href="{{ url_for('logout') }}" title="Chiqish">↗</a>
+  </div>
+</aside>
+
+<main class="app-main chat-main">
+
+  <!-- ── LEFT: Navigation & Lists ────────────────────────────────────── -->
+  <div class="chat-left">
+    <div class="chat-left-head">
+      <div class="chat-head-top">
+        <h2>Muloqot 💬</h2>
+        <button class="btn primary btn-sm btn-new-group" id="btn-open-create-group" type="button" title="Yangi guruh yaratish">
+          <span>+ Guruh</span>
+        </button>
+      </div>
+
+      <!-- Segmented Navigation Tabs -->
+      <div class="chat-nav-tabs">
+        <button type="button" class="chat-tab-pill active" data-tab="convos" id="tab-convos-btn">
+          💬 Suhbatlar
+        </button>
+        <button type="button" class="chat-tab-pill" data-tab="users" id="tab-users-btn">
+          👥 Odamlar (<span id="user-count">{{ all_users|length }}</span>)
+        </button>
+        <button type="button" class="chat-tab-pill" data-tab="groups" id="tab-groups-btn">
+          🏢 Guruhlar (<span id="group-count">{{ my_groups|length }}</span>)
+        </button>
+      </div>
+
+      <!-- Unified Filter / Search Bar -->
+      <div class="chat-search-wrap">
+        <span class="search-icon">🔍</span>
+        <input id="chat-filter-input" type="search" placeholder="Qidirish (ism, @username, guruh)…" autocomplete="off">
+        <button type="button" id="chat-filter-clear" class="search-clear-btn" style="display:none">✕</button>
+      </div>
+    </div>
+
+    <!-- ── TAB 1: Recent Conversations & Groups ── -->
+    <div class="chat-tab-pane active" id="pane-convos">
+      <div class="convo-list" id="convo-list">
+        {% if convos or my_groups %}
+          <!-- Groups header if any -->
+          {% if my_groups %}
+            <div class="chat-section-label">GURUHLAR</div>
+            {% for g in my_groups %}
+              <a class="convo-item convo-group{% if mode == 'group' and active_group and active_group.id == g.id %} active{% endif %}"
+                 href="{{ url_for('chat_group', group_id=g.id) }}" data-search="{{ g.name|lower }}">
+                <div class="convo-avatar group-avatar">👥</div>
+                <div class="convo-body">
+                  <div class="convo-row">
+                    <b>{{ g.name }}</b>
+                    {% if g.my_role == 'owner' %}
+                      <span class="role-badge role-owner">👑 Egasi</span>
+                    {% elif g.my_role == 'admin' %}
+                      <span class="role-badge role-admin">🛡️ Admin</span>
+                    {% endif %}
+                  </div>
+                  <small>{{ g.member_count }} ta a'zo{% if g.description %} · {{ g.description }}{% endif %}</small>
+                </div>
+              </a>
+            {% endfor %}
+          {% endif %}
+
+          <!-- Direct Messages header if any -->
+          {% if convos %}
+            <div class="chat-section-label">SHAXSIY XABARLAR</div>
+            {% for c in convos %}
+              <a class="convo-item convo-dm{% if mode == 'dm' and partner and partner.id == c.id %} active{% endif %}"
+                 href="{{ url_for('chat_with', username=c.username) }}" data-search="{{ c.name|lower }} {{ c.username|lower }}">
+                <div class="convo-avatar">{{ c.name[:1]|upper }}</div>
+                <div class="convo-body">
+                  <div class="convo-row">
+                    <b>{{ c.name }}</b>
+                    {% if c.last_at %}
+                      <time class="convo-time">{{ c.last_at|string|truncate(16, True, '')|replace('T',' ') }}</time>
+                    {% endif %}
+                  </div>
+                  <small>@{{ c.username }}</small>
+                </div>
+                {% if c.unread and c.unread > 0 %}
+                  <span class="convo-badge">{{ c.unread }}</span>
+                {% endif %}
+              </a>
+            {% endfor %}
+          {% endif %}
+        {% else %}
+          <div class="chat-empty">
+            <p>Hozircha hech qanday suhbat yo'q.<br><strong>"Odamlar"</strong> bo'limidan biror kishiga yozing yoki yangi guruh oching!</p>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- ── TAB 2: All Users of the Website ── -->
+    <div class="chat-tab-pane" id="pane-users">
+      <div class="all-users-list" id="all-users-list">
+        {% if all_users %}
+          {% for u in all_users %}
+            <div class="user-card-item" data-search="{{ u.name|lower }} {{ u.username|lower }}">
+              <div class="user-card-avatar">{{ u.name[:1]|upper }}</div>
+              <div class="user-card-info">
+                <div class="user-card-name-row">
+                  <b>{{ u.name }}</b>
+                  {% if u.username == 'alishershukhratov456' %}
+                    <span class="role-badge role-owner">👑 Bosh Admin</span>
+                  {% elif u.is_admin %}
+                    <span class="role-badge role-site-admin">★ Tizim admini</span>
+                  {% endif %}
+                </div>
+                <small class="user-card-username">@{{ u.username }}</small>
+                <div class="user-card-meta">
+                  {% if u.is_private %}
+                    <span class="user-meta-pill private">🔒 Maxfiy</span>
+                  {% else %}
+                    <span class="user-meta-pill progress">🌱 {{ u.completed_count or 0 }}/30 kun</span>
+                  {% endif %}
+                </div>
+              </div>
+              <div class="user-card-actions" style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
+                <a class="btn primary btn-sm user-chat-btn" href="{{ url_for('chat_with', username=u.username) }}">
+                  💬 Yozish
+                </a>
+                {% if is_superadmin and u.username != superadmin_username %}
+                  {% if u.is_admin %}
+                    <button type="button" class="btn ghost btn-xs text-danger" style="font-size:9px;padding:2px 6px"
+                            onclick="toggleAdminFromChat({{ u.id }}, false, '{{ u.name }}')">
+                      Adminlikni olish
+                    </button>
+                  {% else %}
+                    <button type="button" class="btn secondary btn-xs" style="font-size:9px;padding:2px 6px"
+                            onclick="toggleAdminFromChat({{ u.id }}, true, '{{ u.name }}')">
+                      🛡️ Admin qilish
+                    </button>
+                  {% endif %}
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
+        {% else %}
+          <p class="chat-empty">Boshqa foydalanuvchilar topilmadi.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- ── TAB 3: My Groups ── -->
+    <div class="chat-tab-pane" id="pane-groups">
+      <div class="groups-pane-list" id="groups-pane-list">
+        {% if my_groups %}
+          {% for g in my_groups %}
+            <div class="group-card-item{% if mode == 'group' and active_group and active_group.id == g.id %} active{% endif %}"
+                 data-search="{{ g.name|lower }} {{ (g.description or '')|lower }}">
+              <div class="group-card-avatar">👥</div>
+              <div class="group-card-info">
+                <div class="group-card-head">
+                  <b>{{ g.name }}</b>
+                  {% if g.my_role == 'owner' %}
+                    <span class="role-badge role-owner">👑 Guruh egasi</span>
+                  {% elif g.my_role == 'admin' %}
+                    <span class="role-badge role-admin">🛡️ Guruh admini</span>
+                  {% else %}
+                    <span class="role-badge role-member">A'zo</span>
+                  {% endif %}
+                </div>
+                <p class="group-card-desc">{{ g.description or "Guruh tavsifi kiritilmagan." }}</p>
+                <small class="group-card-count">👥 {{ g.member_count }} ta a'zo</small>
+              </div>
+              <a class="btn secondary btn-sm" href="{{ url_for('chat_group', group_id=g.id) }}">
+                Kirish →
+              </a>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="chat-empty">
+            <p>Siz hali hech qanday guruhga a'zo emassiz.<br>Do'stlaringiz bilan birga rivojlanish uchun guruh yarating!</p>
+            <button class="btn primary btn-sm" type="button" onclick="document.getElementById('btn-open-create-group').click()" style="margin-top:10px">
+              ➕ Yangi guruh ochish
+            </button>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── RIGHT: Chat / Conversation Window ────────────────────────────── -->
+  <div class="chat-right">
+
+    {% if mode == 'dm' and partner %}
+      <!-- ── Direct Message Window ── -->
+      <div class="chat-header">
+        <div class="chat-header-avatar">{{ partner.name[:1]|upper }}</div>
+        <div class="chat-header-info">
+          <b>{{ partner.name }}</b>
+          <small>@{{ partner.username }}{% if partner.is_admin %} · ★ Tizim admini{% endif %}{% if partner.is_private %} · 🔒 Maxfiy profil{% endif %}</small>
+        </div>
+      </div>
+
+      <div class="chat-messages" id="chat-messages">
+        {% for m in msgs %}
+          <div class="chat-bubble {{ 'mine' if m.sender_id == my_id else 'theirs' }}">
+            <p>{{ m.body }}</p>
+            <time>{{ m.sent_at[11:16] if m.sent_at is string and m.sent_at|length >= 16 else m.sent_at|string|truncate(16,True,'')|replace('T',' ') }}</time>
+          </div>
+        {% endfor %}
+      </div>
+
+      <form class="chat-composer" id="chat-form" autocomplete="off">
+        <input type="text" id="chat-input" placeholder="Xabar yozing…" maxlength="2000" autocomplete="off">
+        <button type="submit" class="btn primary chat-send" id="chat-send-btn">Yuborish ↑</button>
+      </form>
+
+    {% elif mode == 'group' and active_group %}
+      <!-- ── Group Chat Window ── -->
+      <div class="chat-header group-chat-header">
+        <div class="chat-header-avatar group-avatar-big">👥</div>
+        <div class="chat-header-info">
+          <div class="chat-header-title-row">
+            <b>{{ active_group.name }}</b>
+            {% if my_role == 'owner' %}
+              <span class="role-badge role-owner">👑 Siz guruh egasisiz</span>
+            {% elif my_role == 'admin' %}
+              <span class="role-badge role-admin">🛡️ Siz adminsiz</span>
+            {% else %}
+              <span class="role-badge role-member">Siz a'zosiz</span>
+            {% endif %}
+          </div>
+          <small>
+            👥 <span id="header-member-count">{{ group_members|length }}</span> ta a'zo
+            {% if active_group.description %} · {{ active_group.description }}{% endif %}
+          </small>
+        </div>
+        <div class="chat-header-actions">
+          <button class="btn secondary btn-sm" id="btn-group-info" type="button">
+            ⚙️ Guruh a'zolari va boshqaruv
+          </button>
+        </div>
+      </div>
+
+      <div class="chat-messages" id="chat-messages">
+        {% for m in msgs %}
+          <div class="chat-bubble {{ 'mine' if m.sender_id == my_id else 'theirs' }}">
+            {% if m.sender_id != my_id %}
+              <div class="bubble-sender-line">
+                <strong class="bubble-sender-name">{{ m.sender_name }}</strong>
+                {% if m.sender_role == 'owner' %}
+                  <span class="role-badge role-owner">👑 Egasi</span>
+                {% elif m.sender_role == 'admin' %}
+                  <span class="role-badge role-admin">🛡️ Admin</span>
+                {% endif %}
+              </div>
+            {% endif %}
+            <p>{{ m.body }}</p>
+            <time>{{ m.sent_at[11:16] if m.sent_at is string and m.sent_at|length >= 16 else m.sent_at|string|truncate(16,True,'')|replace('T',' ') }}</time>
+          </div>
+        {% endfor %}
+      </div>
+
+      <form class="chat-composer" id="group-form" autocomplete="off">
+        <input type="text" id="group-input" placeholder="Guruhga xabar yozing…" maxlength="2000" autocomplete="off">
+        <button type="submit" class="btn primary chat-send" id="group-send-btn">Yuborish ↑</button>
+      </form>
+
+    {% else %}
+      <!-- ── Empty / Welcome State ── -->
+      <div class="chat-empty-state">
+        <div class="chat-empty-icon">💬</div>
+        <h3>Muloqot va Hamjamiyat Makoni</h3>
+        <p>Barcha foydalanuvchilar bilan shaxsiy yozishing yoki yangi guruh ochib birga harakat qiling.</p>
+        <div class="chat-empty-actions">
+          <button class="btn secondary" type="button" onclick="document.getElementById('tab-users-btn').click()">
+            👥 Barcha foydalanuvchilar
+          </button>
+          <button class="btn primary" type="button" onclick="document.getElementById('btn-open-create-group').click()">
+            ➕ Yangi guruh ochish
+          </button>
+        </div>
+      </div>
+    {% endif %}
+
+  </div>
+
+</main>
+
+<!-- ── MODAL 1: Create Group ────────────────────────────────────────────── -->
+<div id="modal-create-group" class="chat-modal" role="dialog" aria-modal="true" aria-label="Yangi guruh ochish">
+  <div class="chat-modal-card">
+    <div class="chat-modal-head">
+      <h3>➕ Yangi guruh ochish</h3>
+      <button class="chat-modal-close" type="button" id="close-create-group-modal">✕</button>
+    </div>
+    <form id="create-group-form">
+      <div class="field-group">
+        <label for="cg-name">Guruh nomi *</label>
+        <input type="text" id="cg-name" placeholder="Masalan: 30 kunlik birga o'sish guruhi" maxlength="80" required>
+      </div>
+      <div class="field-group">
+        <label for="cg-desc">Tavsif (ixtiyoriy)</label>
+        <input type="text" id="cg-desc" placeholder="Guruh maqsadi haqida qisqacha…" maxlength="200">
+      </div>
+
+      <div class="field-group">
+        <label>A'zolarni tanlang (Saytdagi foydalanuvchilar):</label>
+        <div class="cg-members-checklist">
+          {% for u in all_users %}
+            <label class="cg-member-checkbox-item">
+              <input type="checkbox" name="members" value="{{ u.id }}">
+              <span class="cg-check-avatar">{{ u.name[:1]|upper }}</span>
+              <div class="cg-check-text">
+                <b>{{ u.name }}</b>
+                <small>@{{ u.username }}</small>
+              </div>
+            </label>
+          {% endfor %}
+        </div>
+      </div>
+
+      <p id="cg-status" class="modal-form-status"></p>
+
+      <div class="chat-modal-footer">
+        <button type="button" class="btn secondary" id="cancel-create-group-btn">Bekor qilish</button>
+        <button type="submit" class="btn primary" id="submit-create-group-btn">Guruhni ochish 🚀</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% if mode == 'group' and active_group %}
+<!-- ── MODAL 2: Group Management & Members ──────────────────────────────── -->
+<div id="modal-group-info" class="chat-modal" role="dialog" aria-modal="true" aria-label="Guruh boshqaruvi">
+  <div class="chat-modal-card modal-large">
+    <div class="chat-modal-head">
+      <div class="modal-head-title">
+        <div class="convo-avatar group-avatar">👥</div>
+        <div>
+          <h3>{{ active_group.name }}</h3>
+          <small>{{ active_group.description or "Guruh ma'lumotlari" }}</small>
+        </div>
+      </div>
+      <button class="chat-modal-close" type="button" id="close-group-info-modal">✕</button>
+    </div>
+
+    <div class="group-info-body">
+      <!-- Group stats bar -->
+      <div class="group-info-stats">
+        <div><span>Guruh ID:</span> <b>#{{ active_group.id }}</b></div>
+        <div><span>A'zolar soni:</span> <b id="modal-member-count-val">{{ group_members|length }}</b></div>
+        <div><span>Sizning rolingiz:</span>
+          {% if my_role == 'owner' %}
+            <b class="role-badge role-owner">👑 Guruh egasi (To'liq huquq)</b>
+          {% elif my_role == 'admin' %}
+            <b class="role-badge role-admin">🛡️ Guruh admini</b>
+          {% else %}
+            <b class="role-badge role-member">Oddiy a'zo</b>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Add member section (Only for Owner and Admin) -->
+      {% if my_role in ('owner', 'admin') %}
+        <div class="group-add-member-card">
+          <label for="add-member-select"><b>Guruhga yangi a'zo qo'shish:</b></label>
+          <div class="add-member-row">
+            <select id="add-member-select" class="form-select">
+              <option value="">Foydalanuvchini tanlang…</option>
+              {% set existing_ids = group_members|map(attribute='id')|list %}
+              {% for u in all_users %}
+                {% if u.id not in existing_ids and u.id != my_id %}
+                  <option value="{{ u.id }}">{{ u.name }} (@{{ u.username }})</option>
+                {% endif %}
+              {% endfor %}
+            </select>
+            <button type="button" class="btn primary" id="btn-add-member">+ Qo'shish</button>
+          </div>
+          <p id="add-member-status" class="modal-form-status"></p>
+        </div>
+      {% endif %}
+
+      <!-- Group members list -->
+      <div class="group-members-section">
+        <h4>Guruh a'zolari (<span id="modal-list-count">{{ group_members|length }}</span>)</h4>
+        <div class="group-members-list" id="modal-members-list">
+          {% for m in group_members %}
+            <div class="gm-item" data-id="{{ m.id }}">
+              <div class="gm-avatar">{{ m.name[:1]|upper }}</div>
+              <div class="gm-info">
+                <div class="gm-name-row">
+                  <b>{{ m.name }}</b>
+                  {% if m.id == my_id %}
+                    <span class="user-meta-pill">(Siz)</span>
+                  {% endif %}
+                </div>
+                <small>@{{ m.username }}</small>
+              </div>
+
+              <div class="gm-role-col">
+                {% if m.role == 'owner' %}
+                  <span class="role-badge role-owner">👑 Egasi</span>
+                {% elif m.role == 'admin' %}
+                  <span class="role-badge role-admin">🛡️ Admin</span>
+                {% else %}
+                  <span class="role-badge role-member">A'zo</span>
+                {% endif %}
+              </div>
+
+              <div class="gm-actions-col">
+                {% if (my_role == 'owner' or is_superadmin) and m.id != my_id %}
+                  {% if m.role == 'member' %}
+                    <button class="btn secondary btn-xs btn-change-role" data-uid="{{ m.id }}" data-role="admin" title="Admin qilish">
+                      🛡️ Admin qilish
+                    </button>
+                  {% elif m.role == 'admin' %}
+                    <button class="btn secondary btn-xs btn-change-role" data-uid="{{ m.id }}" data-role="member" title="Adminlikni bekor qilish">
+                      A'zo qilish
+                    </button>
+                  {% endif %}
+                  <button class="btn ghost btn-xs btn-kick-member" data-uid="{{ m.id }}" data-name="{{ m.name }}" title="Guruhdan chiqarish">
+                    ✕ Chiqarish
+                  </button>
+                {% elif my_role == 'admin' and m.role == 'member' and m.id != my_id %}
+                  <button class="btn ghost btn-xs btn-kick-member" data-uid="{{ m.id }}" data-name="{{ m.name }}" title="Guruhdan chiqarish">
+                    ✕ Chiqarish
+                  </button>
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <!-- Danger zone footer -->
+      <div class="group-danger-zone">
+        {% if my_role != 'owner' %}
+          <button type="button" class="btn ghost text-danger" id="btn-leave-group">
+            🚪 Guruhdan chiqish
+          </button>
+        {% else %}
+          <button type="button" class="btn ghost text-danger" id="btn-delete-group">
+            🗑️ Guruhni butunlay o'chirish
+          </button>
+        {% endif %}
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Main JavaScript logic ────────────────────────────────────────────── -->
+<script>
+// Native Superadmin action for @alishershukhratov456
+window.toggleAdminFromChat = async function(userId, makeAdmin, userName) {
+  const actionText = makeAdmin
+    ? `${userName} ga Sayt Administratori huquqini bermoqchimisiz?`
+    : `${userName} ning Administratorlik huquqini bekor qilmoqchimisiz?`;
+  if (!confirm(actionText)) return;
+
+  try {
+    const res = await fetch(`/api/admin/users/${userId}/role`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_admin: makeAdmin })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      window.location.reload();
+    } else {
+      alert(data.error || "Xatolik yuz berdi.");
+    }
+  } catch (_) {
+    alert("Tarmoq xatosi.");
+  }
+};
+
+(function() {
+  'use strict';
+
+  function escHtml(s) {
+    return String(s || '').replace(/[&<>"']/g, function(c) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  // ── Tab Switching ────────────────────────────────────────────────────────
+  const tabPills = document.querySelectorAll('.chat-tab-pill');
+  const tabPanes = document.querySelectorAll('.chat-tab-pane');
+  const filterInput = document.getElementById('chat-filter-input');
+  const filterClear = document.getElementById('chat-filter-clear');
+
+  tabPills.forEach(pill => {
+    pill.addEventListener('click', () => {
+      tabPills.forEach(p => p.classList.remove('active'));
+      tabPanes.forEach(pane => pane.classList.remove('active'));
+
+      pill.classList.add('active');
+      const targetPane = document.getElementById('pane-' + pill.dataset.tab);
+      if (targetPane) targetPane.classList.add('active');
+
+      // Clear search when switching tabs or filter current
+      applySearchFilter();
+    });
+  });
+
+  // ── Unified Search / Filter ──────────────────────────────────────────────
+  function applySearchFilter() {
+    if (!filterInput) return;
+    const q = filterInput.value.trim().toLowerCase();
+    if (filterClear) filterClear.style.display = q ? 'block' : 'none';
+
+    const activePane = document.querySelector('.chat-tab-pane.active');
+    if (!activePane) return;
+
+    const items = activePane.querySelectorAll('[data-search]');
+    items.forEach(el => {
+      const text = el.getAttribute('data-search') || '';
+      if (!q || text.includes(q)) {
+        el.style.display = '';
+      } else {
+        el.style.display = 'none';
+      }
+    });
+  }
+
+  if (filterInput) {
+    filterInput.addEventListener('input', applySearchFilter);
+  }
+  if (filterClear) {
+    filterClear.addEventListener('click', () => {
+      filterInput.value = '';
+      applySearchFilter();
+      filterInput.focus();
+    });
+  }
+
+  // ── Create Group Modal ───────────────────────────────────────────────────
+  const modalCreateGroup = document.getElementById('modal-create-group');
+  const btnOpenCreateGroup = document.getElementById('btn-open-create-group');
+  const closeCreateGroupBtn = document.getElementById('close-create-group-modal');
+  const cancelCreateGroupBtn = document.getElementById('cancel-create-group-btn');
+  const createGroupForm = document.getElementById('create-group-form');
+  const cgStatus = document.getElementById('cg-status');
+
+  function openCreateGroupModal() {
+    if (modalCreateGroup) modalCreateGroup.classList.add('open');
+    const nameInput = document.getElementById('cg-name');
+    if (nameInput) setTimeout(() => nameInput.focus(), 100);
+  }
+
+  function closeCreateGroupModal() {
+    if (modalCreateGroup) modalCreateGroup.classList.remove('open');
+    if (cgStatus) cgStatus.textContent = '';
+  }
+
+  if (btnOpenCreateGroup) btnOpenCreateGroup.addEventListener('click', openCreateGroupModal);
+  if (closeCreateGroupBtn) closeCreateGroupBtn.addEventListener('click', closeCreateGroupModal);
+  if (cancelCreateGroupBtn) cancelCreateGroupBtn.addEventListener('click', closeCreateGroupModal);
+
+  if (createGroupForm) {
+    createGroupForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('cg-name').value.trim();
+      const description = document.getElementById('cg-desc').value.trim();
+      const checkboxes = createGroupForm.querySelectorAll('input[name="members"]:checked');
+      const member_ids = Array.from(checkboxes).map(cb => Number(cb.value));
+
+      if (!name) {
+        cgStatus.textContent = "Guruh nomini kiriting.";
+        cgStatus.style.color = "#c05";
+        return;
+      }
+
+      cgStatus.textContent = "Guruh yaratilmoqda…";
+      cgStatus.style.color = "#9999ad";
+
+      try {
+        const res = await fetch('/api/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, description, member_ids })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          window.location.href = '/chat/group/' + data.group_id;
+        } else {
+          cgStatus.textContent = data.error || "Xatolik yuz berdi.";
+          cgStatus.style.color = "#c05";
+        }
+      } catch (_) {
+        cgStatus.textContent = "Tarmoq xatosi. Qayta urinib ko'ring.";
+        cgStatus.style.color = "#c05";
+      }
+    });
+  }
+
+  // Close modals on outside click
+  window.addEventListener('click', (e) => {
+    if (e.target === modalCreateGroup) closeCreateGroupModal();
+    const modalGroupInfo = document.getElementById('modal-group-info');
+    if (e.target === modalGroupInfo) modalGroupInfo.classList.remove('open');
+  });
+
+  // ── Group Management Modal ───────────────────────────────────────────────
+  {% if mode == 'group' and active_group %}
+  const modalGroupInfo = document.getElementById('modal-group-info');
+  const btnGroupInfo = document.getElementById('btn-group-info');
+  const closeGroupInfoBtn = document.getElementById('close-group-info-modal');
+  const btnAddMember = document.getElementById('btn-add-member');
+  const addMemberSelect = document.getElementById('add-member-select');
+  const addMemberStatus = document.getElementById('add-member-status');
+  const btnLeaveGroup = document.getElementById('btn-leave-group');
+  const btnDeleteGroup = document.getElementById('btn-delete-group');
+  const groupId = {{ active_group.id }};
+
+  if (btnGroupInfo) {
+    btnGroupInfo.addEventListener('click', () => {
+      if (modalGroupInfo) modalGroupInfo.classList.add('open');
+    });
+  }
+  if (closeGroupInfoBtn) {
+    closeGroupInfoBtn.addEventListener('click', () => {
+      if (modalGroupInfo) modalGroupInfo.classList.remove('open');
+    });
+  }
+
+  // Add Member
+  if (btnAddMember && addMemberSelect) {
+    btnAddMember.addEventListener('click', async () => {
+      const uid = Number(addMemberSelect.value);
+      if (!uid) {
+        addMemberStatus.textContent = "Iltimos, foydalanuvchini tanlang.";
+        addMemberStatus.style.color = "#c05";
+        return;
+      }
+      addMemberStatus.textContent = "Qo'shilmoqda…";
+      addMemberStatus.style.color = "#9999ad";
+
+      try {
+        const res = await fetch(`/api/group/${groupId}/members`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: uid })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          window.location.reload();
+        } else {
+          addMemberStatus.textContent = data.error || "Xatolik.";
+          addMemberStatus.style.color = "#c05";
+        }
+      } catch (_) {
+        addMemberStatus.textContent = "Tarmoq xatosi.";
+        addMemberStatus.style.color = "#c05";
+      }
+    });
+  }
+
+  // Change Role & Kick Member delegated events
+  const modalMembersList = document.getElementById('modal-members-list');
+  if (modalMembersList) {
+    modalMembersList.addEventListener('click', async (e) => {
+      const roleBtn = e.target.closest('.btn-change-role');
+      if (roleBtn) {
+        const targetId = Number(roleBtn.dataset.uid);
+        const newRole = roleBtn.dataset.role;
+        const confirmMsg = newRole === 'admin'
+          ? "Bu foydalanuvchini guruh admini qilmoqchimisiz?"
+          : "Bu foydalanuvchining adminlik huquqini bekor qilmoqchimisiz?";
+        if (!confirm(confirmMsg)) return;
+
+        try {
+          const res = await fetch(`/api/group/${groupId}/members/${targetId}/role`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role: newRole })
+          });
+          const data = await res.json();
+          if (data.ok) window.location.reload();
+          else alert(data.error || "Xatolik.");
+        } catch (_) {
+          alert("Tarmoq xatosi.");
+        }
+        return;
+      }
+
+      const kickBtn = e.target.closest('.btn-kick-member');
+      if (kickBtn) {
+        const targetId = Number(kickBtn.dataset.uid);
+        const name = kickBtn.dataset.name || "foydalanuvchi";
+        if (!confirm(`${name} ni guruhdan chiqarishni xohlaysizmi?`)) return;
+
+        try {
+          const res = await fetch(`/api/group/${groupId}/members/${targetId}`, {
+            method: 'DELETE'
+          });
+          const data = await res.json();
+          if (data.ok) window.location.reload();
+          else alert(data.error || "Xatolik.");
+        } catch (_) {
+          alert("Tarmoq xatosi.");
+        }
+      }
+    });
+  }
+
+  // Leave Group
+  if (btnLeaveGroup) {
+    btnLeaveGroup.addEventListener('click', async () => {
+      if (!confirm("Haqiqatan ham ushbu guruhdan chiqmoqchimisiz?")) return;
+      try {
+        const res = await fetch(`/api/group/${groupId}/members/{{ my_id }}`, {
+          method: 'DELETE'
+        });
+        const data = await res.json();
+        if (data.ok) {
+          window.location.href = '/chat';
+        } else {
+          alert(data.error || "Xatolik yuz berdi.");
+        }
+      } catch (_) {
+        alert("Tarmoq xatosi.");
+      }
+    });
+  }
+
+  // Delete Group
+  if (btnDeleteGroup) {
+    btnDeleteGroup.addEventListener('click', async () => {
+      if (!confirm("DIQQAT: Guruh va barcha xabarlar butunlay o'chiriladi. Rozimisiz?")) return;
+      try {
+        const res = await fetch(`/api/group/${groupId}`, {
+          method: 'DELETE'
+        });
+        const data = await res.json();
+        if (data.ok) {
+          window.location.href = '/chat';
+        } else {
+          alert(data.error || "Xatolik yuz berdi.");
+        }
+      } catch (_) {
+        alert("Tarmoq xatosi.");
+      }
+    });
+  }
+  {% endif %}
+
+  // ── Messaging & Polling: Direct Messages ─────────────────────────────────
+  {% if mode == 'dm' and partner %}
+  (function() {
+    const partnerId = {{ partner.id }};
+    const myId = {{ my_id }};
+    let lastSentAt = {{ (msgs[-1].sent_at if msgs else '1970-01-01 00:00:00') | tojson }};
+
+    const msgBox = document.getElementById('chat-messages');
+    const form = document.getElementById('chat-form');
+    const input = document.getElementById('chat-input');
+    const sendBtn = document.getElementById('chat-send-btn');
+
+    if (msgBox) msgBox.scrollTop = msgBox.scrollHeight;
+    if (input) setTimeout(() => input.focus(), 150);
+
+    function appendBubble(body, sentAt, mine) {
+      const div = document.createElement('div');
+      div.className = 'chat-bubble ' + (mine ? 'mine' : 'theirs');
+      const p = document.createElement('p');
+      p.textContent = body;
+      const t = document.createElement('time');
+      t.textContent = String(sentAt).slice(11, 16);
+      div.appendChild(p);
+      div.appendChild(t);
+      msgBox.appendChild(div);
+      msgBox.scrollTop = msgBox.scrollHeight;
+    }
+
+    if (form) {
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const body = input.value.trim();
+        if (!body) return;
+
+        input.value = '';
+        input.disabled = true;
+        sendBtn.disabled = true;
+
+        try {
+          const res = await fetch('/api/chat/' + partnerId, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body })
+          });
+          const data = await res.json();
+          if (data.ok) {
+            appendBubble(body, data.sent_at, true);
+            lastSentAt = data.sent_at;
+          } else {
+            alert(data.error || "Xabar yuborilmadi.");
+          }
+        } catch (_) {
+          alert("Xabar yuborishda tarmoq xatosi yuz berdi.");
+        }
+        finally {
+          input.disabled = false;
+          sendBtn.disabled = false;
+          input.focus();
+        }
+      });
+    }
+
+    // Poll for new incoming DM every 3 seconds
+    setInterval(async () => {
+      try {
+        const res = await fetch('/api/chat/' + partnerId + '/poll?after=' + encodeURIComponent(lastSentAt));
+        if (!res.ok) return;
+        const msgs = await res.json();
+        msgs.forEach(m => {
+          if (m.sender_id !== myId) {
+            appendBubble(m.body, m.sent_at, false);
+          }
+          lastSentAt = m.sent_at;
+        });
+      } catch (_) {}
+    }, 3000);
+  })();
+  {% endif %}
+
+  // ── Messaging & Polling: Group Chat ──────────────────────────────────────
+  {% if mode == 'group' and active_group %}
+  (function() {
+    const groupId = {{ active_group.id }};
+    const myId = {{ my_id }};
+    let lastSentAt = {{ (msgs[-1].sent_at if msgs else '1970-01-01 00:00:00') | tojson }};
+
+    const msgBox = document.getElementById('chat-messages');
+    const form = document.getElementById('group-form');
+    const input = document.getElementById('group-input');
+    const sendBtn = document.getElementById('group-send-btn');
+
+    if (msgBox) msgBox.scrollTop = msgBox.scrollHeight;
+    if (input) setTimeout(() => input.focus(), 150);
+
+    function appendGroupBubble(msg, mine) {
+      const div = document.createElement('div');
+      div.className = 'chat-bubble ' + (mine ? 'mine' : 'theirs');
+
+      if (!mine) {
+        const senderLine = document.createElement('div');
+        senderLine.className = 'bubble-sender-line';
+        const strong = document.createElement('strong');
+        strong.className = 'bubble-sender-name';
+        strong.textContent = msg.sender_name || 'A\'zo';
+        senderLine.appendChild(strong);
+
+        if (msg.sender_role === 'owner') {
+          const badge = document.createElement('span');
+          badge.className = 'role-badge role-owner';
+          badge.textContent = '👑 Egasi';
+          senderLine.appendChild(badge);
+        } else if (msg.sender_role === 'admin') {
+          const badge = document.createElement('span');
+          badge.className = 'role-badge role-admin';
+          badge.textContent = '🛡️ Admin';
+          senderLine.appendChild(badge);
+        }
+        div.appendChild(senderLine);
+      }
+
+      const p = document.createElement('p');
+      p.textContent = msg.body;
+      const t = document.createElement('time');
+      t.textContent = String(msg.sent_at).slice(11, 16);
+
+      div.appendChild(p);
+      div.appendChild(t);
+      msgBox.appendChild(div);
+      msgBox.scrollTop = msgBox.scrollHeight;
+    }
+
+    if (form) {
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const body = input.value.trim();
+        if (!body) return;
+
+        input.value = '';
+        input.disabled = true;
+        sendBtn.disabled = true;
+
+        try {
+          const res = await fetch(`/api/group/${groupId}/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body })
+          });
+          const data = await res.json();
+          if (data.ok) {
+            appendGroupBubble({
+              body: body,
+              sent_at: data.sent_at,
+              sender_id: myId
+            }, true);
+            lastSentAt = data.sent_at;
+          } else {
+            alert(data.error || "Xabar yuborilmadi.");
+          }
+        } catch (_) {}
+        finally {
+          input.disabled = false;
+          sendBtn.disabled = false;
+          input.focus();
+        }
+      });
+    }
+
+    // Poll group messages every 3 seconds
+    setInterval(async () => {
+      try {
+        const res = await fetch(`/api/group/${groupId}/poll?after=` + encodeURIComponent(lastSentAt));
+        if (!res.ok) return;
+        const newMsgs = await res.json();
+        newMsgs.forEach(m => {
+          if (m.sender_id !== myId) {
+            appendGroupBubble(m, false);
+          }
+          lastSentAt = m.sent_at;
+        });
+      } catch (_) {}
+    }, 3000);
+  })();
+  {% endif %}
+
+})();
+</script>
+
+<nav class="mobile-nav">
+  <a href="/dashboard">
+    <span class="nav-icon">▦</span>
+    <span class="nav-label">Kundalik</span>
+  </a>
+  <a href="/dashboard#calendar">
+    <span class="nav-icon">◷</span>
+    <span class="nav-label">Kalendar</span>
+  </a>
+  <a href="/dashboard#reminders">
+    <span class="nav-icon">🔔</span>
+    <span class="nav-label">Eslatma</span>
+  </a>
+  <a href="/chat" class="active">
+    <span class="nav-icon">💬</span>
+    <span class="nav-label">Chat</span>
+  </a>
+  <a href="/settings">
+    <span class="nav-icon">⚙</span>
+    <span class="nav-label">Sozlama</span>
+  </a>
+</nav>
+
+
+<button id="theme-toggle" title="Mavzuni o'zgartirish">🌙</button>
+</body>
+</html>

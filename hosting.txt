@@ -1,0 +1,1 @@
+ $env:SECRET_KEY="dev-secret-key"; $env:FLASK_APP="app.py"; .\.venv\Scripts\python.exe app.py

@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Admin — Bir Qadam</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script defer src="{{ url_for('static', filename='theme.js') }}"></script>
+</head>
+<body class="dashboard-page">
+
+<aside class="sidebar">
+  <a class="brand" href="/dashboard"><span class="brand-mark">✦</span><span>BIR<span class="brand-light">QADAM</span></span></a>
+  <div class="side-label">ADMIN PANEL</div>
+  <a class="side-item active" href="{{ url_for('admin') }}">▦ <span>Boshqaruv</span></a>
+  <a class="side-item" href="/chat">💬 <span>Xabarlar</span></a>
+  <a class="side-item" href="/settings">⚙ <span>Sozlamalar</span></a>
+  <div class="sidebar-bottom">
+    <div class="side-avatar">A</div>
+    <div class="side-user"><b>Admin</b><small>Bir Qadam</small></div>
+    <a class="logout" href="{{ url_for('logout') }}" title="Chiqish">↗</a>
+  </div>
+</aside>
+
+<main class="app-main">
+
+  <header class="app-header">
+    <div>
+      <span class="eyebrow">BIR QADAM / BOSHQARUV</span>
+      <h1>Admin dashboard ✦</h1>
+      <p>Ishtirokchilar va ularning rivojlanishini kuzating.
+        {% if is_superadmin %}
+          <span class="role-badge role-owner" style="margin-left:8px;font-size:11px">👑 Bosh Admin (@{{ superadmin_username }}): Admin tayinlash faqat sizga xos</span>
+        {% endif %}
+      </p>
+    </div>
+    <a class="btn secondary" href="{{ url_for('dashboard') }}">← Saytga qaytish</a>
+  </header>
+
+  <!-- Stats row -->
+  <div class="admin-stats">
+    <div class="admin-stat-card">
+      <span class="admin-stat-icon">👥</span>
+      <div>
+        <p>Jami foydalanuvchilar</p>
+        <h2>{{ total_users }}</h2>
+      </div>
+    </div>
+    <div class="admin-stat-card">
+      <span class="admin-stat-icon">📝</span>
+      <div>
+        <p>Jami yozuvlar</p>
+        <h2>{{ total_entries }}</h2>
+      </div>
+    </div>
+    <div class="admin-stat-card">
+      <span class="admin-stat-icon">🔔</span>
+      <div>
+        <p>Faol eslatmalar</p>
+        <h2>{{ total_reminders }}</h2>
+      </div>
+    </div>
+    <div class="admin-stat-card">
+      <span class="admin-stat-icon">🛡</span>
+      <div>
+        <p>Administratorlar</p>
+        <h2>{{ total_admins }}</h2>
+      </div>
+    </div>
+  </div>
+
+  <!-- Users table -->
+  <section class="admin-panel">
+    <div class="admin-panel-head">
+      <h2>Ishtirokchilar</h2>
+      <p>Foydalanuvchi qatoriga bosib uning kundalik progressini ko'ring.
+        {% if is_superadmin %}
+          <strong style="color:var(--purple);display:block;margin-top:4px">✦ Faqat siz boshqa foydalanuvchilarga Admin huquqini bera olasiz yoki bekor qilasiz.</strong>
+        {% endif %}
+      </p>
+    </div>
+    {% if users %}
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>Ism</th>
+            <th>@username</th>
+            <th>Email</th>
+            <th>Boshlangan</th>
+            <th>Progress</th>
+            <th>Kunlar</th>
+            <th>Adminlik huquqi</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for user in users %}
+          <tr class="admin-user-row" onclick="window.location='{{ url_for('admin_user_detail', uid=user.id) }}'">
+            <td><b>{{ user.name }}</b></td>
+            <td><span class="admin-username">@{{ user.username }}</span></td>
+            <td>{{ user.email }}</td>
+            <td>{{ user.start_date }}</td>
+            <td>
+              <div class="admin-prog-wrap">
+                <div class="admin-prog-bar">
+                  <div class="admin-prog-fill" style="width:{{ ((user.completed_count / 30) * 100)|round|int }}%"></div>
+                </div>
+                <span>{{ ((user.completed_count / 30) * 100)|round|int }}%</span>
+              </div>
+            </td>
+            <td><span class="admin-pill">{{ user.completed_count }} / 30</span></td>
+            <td>
+              {% if user.username == superadmin_username %}
+                <span class="role-badge role-owner">👑 Bosh Admin (Asoschi)</span>
+              {% elif user.is_admin %}
+                <span class="role-badge role-admin">🛡️ Administrator</span>
+                {% if is_superadmin %}
+                  <button type="button" class="btn secondary btn-xs btn-admin-toggle"
+                          style="margin-left:8px"
+                          onclick="event.stopPropagation(); toggleSiteAdmin({{ user.id }}, false, '{{ user.name }}')">
+                    Bekor qilish
+                  </button>
+                  <button type="button" class="btn ghost btn-xs" style="margin-left:4px"
+                          title="Foydalanuvchi parolini yangilash"
+                          onclick="event.stopPropagation(); resetPasswordPrompt({{ user.id }}, '{{ user.name }}')">
+                    🔑 Parol
+                  </button>
+                {% endif %}
+              {% else %}
+                <span class="role-badge role-member">Foydalanuvchi</span>
+                {% if is_superadmin %}
+                  <button type="button" class="btn primary btn-xs btn-admin-toggle"
+                          style="margin-left:8px"
+                          onclick="event.stopPropagation(); toggleSiteAdmin({{ user.id }}, true, '{{ user.name }}')">
+                    🛡️ Admin qilish
+                  </button>
+                  <button type="button" class="btn ghost btn-xs" style="margin-left:4px"
+                          title="Foydalanuvchi parolini yangilash"
+                          onclick="event.stopPropagation(); resetPasswordPrompt({{ user.id }}, '{{ user.name }}')">
+                    🔑 Parol
+                  </button>
+                {% endif %}
+              {% endif %}
+            </td>
+            <td><span class="admin-view-link">Ko'rish →</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <p class="admin-empty">Hozircha foydalanuvchilar yo'q.</p>
+    {% endif %}
+  </section>
+
+  <!-- Reminders panel -->
+  <section class="admin-panel" id="reminders-panel" style="margin-top:20px">
+    <div class="admin-panel-head">
+      <h2>Barcha eslatmalar 🔔</h2>
+      <p>Foydalanuvchilarning belgilangan eslatmalari.</p>
+    </div>
+    <div id="admin-reminders-wrap">
+      <p class="admin-empty">Yuklanmoqda…</p>
+    </div>
+  </section>
+
+</main>
+
+<button id="theme-toggle" title="Mavzuni o'zgartirish">🌙</button>
+
+<script>
+// Toggle Platform Admin Role (Native exclusive for @alishershukhratov456)
+async function toggleSiteAdmin(userId, makeAdmin, userName) {
+  const actionText = makeAdmin
+    ? `${userName} ga Sayt Administratori huquqini bermoqchimisiz?`
+    : `${userName} ning Administratorlik huquqini bekor qilmoqchimisiz?`;
+  if (!confirm(actionText)) return;
+
+  try {
+    const res = await fetch(`/api/admin/users/${userId}/role`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_admin: makeAdmin })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      window.location.reload();
+    } else {
+      alert(data.error || "Xatolik yuz berdi.");
+    }
+  } catch (_) {
+    alert("Tarmoq xatosi.");
+  }
+}
+
+// Reset User Password (Exclusive for @alishershukhratov456)
+async function resetPasswordPrompt(userId, userName) {
+  const newPw = prompt(`${userName} uchun yangi parol kiriting (kamida 6 ta belgi):`);
+  if (!newPw) return;
+  if (newPw.length < 6) {
+    alert("Parol kamida 6 ta belgi bo'lishi kerak.");
+    return;
+  }
+  try {
+    const res = await fetch(`/api/admin/users/${userId}/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: newPw })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      alert(`${userName} ning yangi paroli saqlandi! Endi u ushbu yangi parol bilan tizimga kira oladi.`);
+    } else {
+      alert(data.error || "Xatolik yuz berdi.");
+    }
+  } catch (_) {
+    alert("Tarmoq xatosi.");
+  }
+}
+
+async function loadAdminReminders() {
+  const wrap = document.getElementById('admin-reminders-wrap');
+  try {
+    const res  = await fetch('/api/admin/reminders');
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    if (!data.length) {
+      wrap.innerHTML = '<p class="admin-empty">Hozircha hech qanday eslatma yo\'q.</p>';
+      return;
+    }
+    const fmtDt = iso => iso
+      ? new Date(iso).toLocaleString('uz-UZ', {day:'2-digit',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'})
+      : '—';
+    const esc = s => String(s).replace(/[&<>"']/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    wrap.innerHTML = '<div class="admin-reminder-list">' + data.map(r => `
+      <div class="admin-reminder-row${r.fired ? ' fired' : ''}" data-id="${r.id}">
+        <div class="admin-r-bell">${r.fired ? '🔕' : '🔔'}</div>
+        <div class="admin-r-body">
+          <b>${esc(r.message)}</b>
+          <span>${fmtDt(r.remind_at)}${r.fired ? ' · Yuborildi ✓' : ''}</span>
+        </div>
+        <span class="admin-r-user">${esc(r.user_name)} &lt;${esc(r.email)}&gt;</span>
+        <button class="admin-r-del" data-id="${r.id}" title="O'chirish">✕</button>
+      </div>`).join('') + '</div>';
+  } catch(_) {
+    wrap.innerHTML = '<p class="admin-empty">Yuklab bo\'lmadi.</p>';
+  }
+}
+
+document.getElementById('reminders-panel').addEventListener('click', async e => {
+  const btn = e.target.closest('.admin-r-del');
+  if (!btn) return;
+  await fetch(`/api/admin/reminders/${btn.dataset.id}`, {method:'DELETE'});
+  loadAdminReminders();
+});
+
+loadAdminReminders();
+</script>
+</body>
+</html>
